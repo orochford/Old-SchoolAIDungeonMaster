@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Crimson Text', Georgia, serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'IM Fell English', Georgia, serif;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded font-semibold transition-colors duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-parchment-600 text-dungeon-900 hover:bg-parchment-500;
+  }
+
+  .btn-secondary {
+    @apply bg-dungeon-700 text-parchment-100 hover:bg-dungeon-600 border border-parchment-600;
+  }
+
+  .btn-danger {
+    @apply bg-red-800 text-parchment-100 hover:bg-red-700;
+  }
+
+  .card {
+    @apply bg-dungeon-800 border border-dungeon-600 rounded-lg p-4 shadow-lg;
+  }
+
+  .input {
+    @apply bg-dungeon-700 border border-dungeon-500 rounded px-3 py-2 text-parchment-100
+           placeholder-parchment-400 focus:outline-none focus:border-parchment-500;
+  }
+
+  .label {
+    @apply text-parchment-300 font-semibold text-sm uppercase tracking-wide;
+  }
+
+  /* Scrollbar styling */
+  .scrollbar-dark::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-track {
+    @apply bg-dungeon-800;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-thumb {
+    @apply bg-dungeon-600 rounded;
+  }
+
+  .scrollbar-dark::-webkit-scrollbar-thumb:hover {
+    @apply bg-dungeon-500;
+  }
+
+  /* Parchment effect for character sheets */
+  .parchment {
+    background: linear-gradient(135deg, #f9f0e3 0%, #f3e4cd 50%, #e8d2a8 100%);
+    @apply text-dungeon-800;
+  }
+
+  /* Dice animation */
+  @keyframes roll {
+    0% { transform: rotate(0deg); }
+    25% { transform: rotate(90deg); }
+    50% { transform: rotate(180deg); }
+    75% { transform: rotate(270deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .dice-rolling {
+    animation: roll 0.5s ease-in-out;
+  }
+}
