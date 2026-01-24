@@ -407,6 +407,95 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                     })
                     logger.info(f"Sent {len(history_messages)} messages for session {session_id}")
 
+            # Send map data if available
+            try:
+                from app.domains.maps.map_service import MapService
+                from app.domains.adventures.retriever import AdventureDataRetriever
+
+                logger.info(f"[Map] Starting map loading for session {session_id}")
+                map_service = MapService(db)
+                active_map = await map_service.get_active_map(game_session.campaign_id)
+                logger.info(f"[Map] Active map: {active_map}")
+
+                if active_map:
+                    # Use existing dungeon map
+                    map_data = await map_service.get_map_data(active_map.id, include_fog=True)
+                    if map_data:
+                        await websocket.send_json({
+                            "type": "tool_result",
+                            "tool_name": "display_map",
+                            "result": {
+                                "map_id": map_data["id"],
+                                "map_name": map_data["name"],
+                                "rendered_map": map_data["rendered_map"],
+                                "width": map_data["width"],
+                                "height": map_data["height"],
+                                "player_position": map_data["player_position"],
+                                "markers": map_data["markers"],
+                                "exploration_progress": f"{map_data['revealed_count']}/{map_data['total_cells']} cells explored",
+                            },
+                        })
+                        logger.info(f"[Map] Sent active dungeon map for session {session_id}")
+                elif campaign and campaign.adventure_document_id:
+                    # Generate connection map from adventure locations
+                    logger.info(f"[Map] No active map, checking adventure module for doc {campaign.adventure_document_id}")
+                    retriever = AdventureDataRetriever(db)
+                    module = await retriever.get_module_for_document(campaign.adventure_document_id)
+                    logger.info(f"[Map] Module found: {module.title if module else 'None'}")
+
+                    if module:
+                        locations = await retriever.get_all_locations(module.id)
+                        logger.info(f"[Map] Found {len(locations)} locations")
+
+                        if locations:
+                            # Get exits for each location (limit to first 20 to avoid too many queries)
+                            full_locations = []
+                            for loc in locations[:20]:
+                                loc_context = await retriever.get_location_context(module.id, loc['key'])
+                                if loc_context and loc_context.get('location'):
+                                    full_locations.append({
+                                        'location_key': loc['key'],
+                                        'name': loc['name'],
+                                        'exits': loc_context['location'].get('exits', {}),
+                                    })
+                            logger.info(f"[Map] Built {len(full_locations)} full locations with exits")
+
+                            adventure_state = game_session.adventure_state or {}
+                            explored_keys = adventure_state.get('visited_locations', [])
+                            current_key = adventure_state.get('current_location_key')
+                            logger.info(f"[Map] Current: {current_key}, Explored: {explored_keys}")
+
+                            map_result = map_service.generate_connection_map(
+                                locations=full_locations,
+                                current_location_key=current_key,
+                                explored_keys=explored_keys,
+                            )
+                            logger.info(f"[Map] Generated map: {map_result['width']}x{map_result['height']}, {len(map_result['markers'])} markers")
+
+                            await websocket.send_json({
+                                "type": "tool_result",
+                                "tool_name": "display_map",
+                                "result": {
+                                    "map_id": "connection_map",
+                                    "map_name": f"{module.title} - Area Map",
+                                    "rendered_map": map_result["rendered_map"],
+                                    "width": map_result["width"],
+                                    "height": map_result["height"],
+                                    "player_position": map_result["player_position"],
+                                    "markers": map_result["markers"],
+                                    "exploration_progress": f"{len(explored_keys)}/{len(full_locations)} areas explored",
+                                },
+                            })
+                            logger.info(f"[Map] Sent connection map for session {session_id}")
+                        else:
+                            logger.warning(f"[Map] No locations found for module {module.id}")
+                    else:
+                        logger.warning(f"[Map] No parsed module found for document {campaign.adventure_document_id}")
+                else:
+                    logger.info(f"[Map] No map source available (no active map, no adventure_document_id)")
+            except Exception as map_error:
+                logger.exception(f"[Map] Failed to load map for session {session_id}: {map_error}")
+
             # If this is a new session with no messages (or only empty messages), generate opening scene
             # Re-check has_valid_messages (we defined it earlier for framing, recheck after history)
             has_valid_messages = game_session.messages and any(

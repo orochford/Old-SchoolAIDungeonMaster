@@ -48,6 +48,9 @@ class AdventureModule(Base, BaseModel):
     # Player-facing background text (read-aloud intro)
     player_background = Column(Text)
 
+    # Path to full module markdown file (for complete LLM reference)
+    full_markdown_path = Column(String(512), nullable=True)
+
     # Rumors table as structured JSON
     # Format: [{"roll": "1-2", "rumor": "...", "is_true": true}, ...]
     rumors_table = Column(JSONB, default=[])
@@ -101,6 +104,7 @@ class AdventureLocation(Base, BaseModel):
     # Location content
     dm_description = Column(Text, nullable=False)  # Full DM text
     read_aloud_text = Column(Text)  # Player-facing read-aloud description
+    source_text = Column(Text)  # Verbatim text from PDF, never modified
 
     # Room features as JSON list
     # Format: [{"feature": "...", "details": "..."}, ...]

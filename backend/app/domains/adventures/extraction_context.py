@@ -361,11 +361,17 @@ class ExtractionContext:
         loc = self.locations[location_key]
         parts = [f"## Location {location_key}: {loc.name}"]
         parts.append(f"Level: {loc.dungeon_level}")
-        parts.append(f"Exits: {loc.exits}")
+        # Handle malformed exits gracefully
+        if isinstance(loc.exits, dict):
+            parts.append(f"Exits: {loc.exits}")
+        else:
+            parts.append(f"Exits: (malformed data)")
 
         if include_adjacent:
-            # Get adjacent location briefs
-            adjacent_keys = set(loc.exits.values())
+            # Get adjacent location briefs - handle malformed exits gracefully
+            adjacent_keys = set()
+            if isinstance(loc.exits, dict):
+                adjacent_keys = set(loc.exits.values())
             if adjacent_keys:
                 parts.append("\n### Adjacent Locations:")
                 for adj_key in adjacent_keys:

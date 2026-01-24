@@ -437,11 +437,12 @@ async def delete_sourcebook(
 
     if module:
         # Delete adventure module's child records
-        await db.execute(sql_delete(AdventureLocation).where(AdventureLocation.module_id == module.id))
+        # Order matters: delete records that reference locations BEFORE deleting locations
         await db.execute(sql_delete(AdventureNPC).where(AdventureNPC.module_id == module.id))
         await db.execute(sql_delete(AdventureEncounter).where(AdventureEncounter.module_id == module.id))
         await db.execute(sql_delete(AdventureItem).where(AdventureItem.module_id == module.id))
         await db.execute(sql_delete(AdventureStoryBeat).where(AdventureStoryBeat.module_id == module.id))
+        await db.execute(sql_delete(AdventureLocation).where(AdventureLocation.module_id == module.id))
         await db.execute(sql_delete(AdventureModule).where(AdventureModule.id == module.id))
 
     # Delete extracted images directory

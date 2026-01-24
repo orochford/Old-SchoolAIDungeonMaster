@@ -116,6 +116,10 @@ class DMService:
         # Get adventure context if this campaign has an adventure module
         adventure_context = ""
         adventure_state = game_session.adventure_state or {}
+
+        # Debug logging for location tracking
+        logger.info(f"[DM] current_location_key={adventure_state.get('current_location_key')}, current_location={adventure_state.get('current_location')}")
+
         if campaign and campaign.adventure_document_id:
             # Get adventure-specific content
             adventure_doc = await self.adventure_planner.get_adventure_document(
@@ -123,34 +127,92 @@ class DMService:
             )
             adventure_title = adventure_doc.title if adventure_doc else "Adventure"
 
-            # Check for parsed structured adventure data first
-            adventure_content = await self._get_structured_adventure_context(
+            # Get parsed structured adventure data (locations, NPCs, etc.)
+            structured_content = await self._get_structured_adventure_context(
                 campaign.adventure_document_id,
                 adventure_state,
                 player_input,
             )
 
-            # Fall back to RAG if no structured data available
-            if not adventure_content:
-                # Build a better query for adventure content
-                # If this looks like an opening/start request, query for START content
-                is_opening = any(kw in player_input.lower() for kw in
-                    ["begin", "start", "new adventure", "opening", "first scene", "set the scene"])
+            # ALWAYS also get RAG content to supplement structured data
+            # This ensures we capture details like traps, secrets, and full descriptions
+            # that may not have been fully extracted during parsing
+            is_opening = any(kw in player_input.lower() for kw in
+                ["begin", "start", "new adventure", "opening", "first scene", "set the scene"])
 
-                if is_opening:
-                    query_text = "START beginning players arrive entrance first scene opening BACKGROUND"
+            if is_opening:
+                # For opening scenes, get multiple specific queries to ensure we capture:
+                # 1. Physical description of the dungeon/location exterior
+                # 2. Entrance/approach description
+                # 3. Background/setting lore
+                rag_parts = []
+
+                # Get adventure module title for more targeted queries
+                adventure_retriever = AdventureDataRetriever(self.db)
+                module = await adventure_retriever.get_module_for_document(campaign.adventure_document_id)
+                module_title = module.title if module else "dungeon"
+
+                # Query 1: Physical description and exterior
+                exterior_chunks = await self.retriever.query(
+                    query=f"{module_title} exterior physical description landscape terrain hill rock",
+                    document_ids=[campaign.adventure_document_id],
+                    top_k=3,
+                )
+                for chunk in exterior_chunks:
+                    rag_parts.append(f"[PHYSICAL DESCRIPTION]\n{chunk['content']}")
+
+                # Query 2: Entrance description
+                entrance_chunks = await self.retriever.query(
+                    query=f"{module_title} entrance approach arrival corridor first area",
+                    document_ids=[campaign.adventure_document_id],
+                    top_k=3,
+                )
+                for chunk in entrance_chunks:
+                    if chunk["chunk_id"] not in [c["chunk_id"] for c in exterior_chunks]:
+                        rag_parts.append(f"[ENTRANCE AREA]\n{chunk['content']}")
+
+                # Query 3: Area 1 / First room specifically
+                area1_chunks = await self.retriever.query(
+                    query="area 1 room 1 entrance alcoves corridor first location",
+                    document_ids=[campaign.adventure_document_id],
+                    top_k=2,
+                )
+                for chunk in area1_chunks:
+                    chunk_ids_seen = [c["chunk_id"] for c in exterior_chunks + entrance_chunks]
+                    if chunk["chunk_id"] not in chunk_ids_seen:
+                        rag_parts.append(f"[FIRST LOCATION]\n{chunk['content']}")
+
+                rag_content = "\n\n---\n\n".join(rag_parts) if rag_parts else ""
+                logger.info(f"[DM] Opening scene RAG: {len(rag_parts)} chunks retrieved")
+            else:
+                # For non-opening scenes, filter RAG to current location to prevent
+                # retrieving contradictory content from other areas
+                current_location_key = adventure_state.get("current_location_key")
+                current_location = adventure_state.get("current_location", "")
+
+                # Build location-specific query to improve relevance
+                if current_location_key:
+                    # Prioritize current location in query
+                    query_text = f"location {current_location_key} {current_location} {player_input}"
                 else:
-                    # Always include current location and scene in the query for better RAG results
-                    current_location = adventure_state.get("current_location", "")
-                    current_scene = adventure_state.get("current_scene", "")
-                    query_text = f"{player_input} {current_location} {current_scene}".strip()
+                    query_text = f"{player_input} {current_location}".strip()
 
-                # Get contextual content from the adventure (RAG fallback)
-                adventure_content = await self.retriever.get_adventure_context(
+                logger.info(f"[DM] RAG query: {query_text[:100]}...")
+
+                # Get raw PDF content via RAG for full details
+                # Limit to 3 chunks to reduce noise from other locations
+                rag_content = await self.retriever.get_adventure_context(
                     query=query_text,
                     adventure_document_id=campaign.adventure_document_id,
-                    current_location=adventure_state.get("current_location"),
+                    current_location=current_location,
+                    max_chunks=3,
                 )
+
+            # Combine structured and RAG content
+            if structured_content and rag_content:
+                adventure_content = f"{structured_content}\n\n## RAW MODULE TEXT (for full details)\n{rag_content}"
+            else:
+                adventure_content = structured_content or rag_content
 
             # Build adventure context section
             adventure_context = build_adventure_context_section(
@@ -634,8 +696,20 @@ class DMService:
 
         # Build rich context from structured data
         context_parts = []
+        full_markdown_text = ""  # Store for extracting current location verbatim text
 
-        # Add module summary
+        # Load full module markdown for extracting verbatim location text
+        # NOTE: We don't dump the entire markdown into context (too large, causes "lost in middle" problem)
+        # Instead, we extract just the current location's verbatim text below
+        if module.full_markdown_path and os.path.exists(module.full_markdown_path):
+            try:
+                with open(module.full_markdown_path, 'r', encoding='utf-8') as f:
+                    full_markdown_text = f.read()
+                logger.info(f"[DM] Loaded full module markdown for extraction: {len(full_markdown_text)} chars")
+            except Exception as e:
+                logger.warning(f"[DM] Failed to load full module markdown: {e}")
+
+        # Add module summary and overview
         summary = await retriever.get_module_summary(module.id)
         if summary:
             context_parts.append(f"## Adventure: {summary.get('title', 'Unknown')}")
@@ -645,6 +719,16 @@ class DMService:
                 context_parts.append(f"Recommended Levels: {summary['recommended_levels']}")
             if summary.get('summary'):
                 context_parts.append(f"\n{summary['summary']}")
+
+            # DM Overview - critical guidance for running the adventure
+            if summary.get('dm_overview'):
+                context_parts.append(f"\n### DM OVERVIEW (How to Run This Adventure)")
+                context_parts.append(summary['dm_overview'])
+
+            # Adventure Flow - the narrative structure
+            if summary.get('adventure_flow'):
+                context_parts.append(f"\n### ADVENTURE FLOW (Narrative Structure)")
+                context_parts.append(summary['adventure_flow'])
 
         # CRITICAL: Include all valid locations so DM knows what exists in the module
         logger.info(f"[DM] Fetching all locations for module {module.id}")
@@ -673,12 +757,19 @@ class DMService:
         if current_location_key:
             location_context = await retriever.get_location_context(module.id, current_location_key)
             if location_context:
-                context_parts.append(self._format_location_context(location_context))
+                # Pass full markdown so we can extract verbatim text for this location
+                context_parts.append(self._format_location_context(location_context, full_markdown_text))
 
         # Get wandering monster table for current area
         current_tier = adventure_state.get("current_tier")
-        if current_tier:
-            wandering = await retriever.get_wandering_encounter(module.id, tier=current_tier)
+        current_dungeon_level = adventure_state.get("current_dungeon_level")
+        # Always try to get wandering encounters if we have tier or level info
+        if current_tier or current_dungeon_level:
+            wandering = await retriever.get_wandering_encounter(
+                module.id,
+                tier=current_tier,
+                dungeon_level=current_dungeon_level
+            )
             if wandering:
                 context_parts.append(self._format_wandering_table(wandering))
 
@@ -707,8 +798,53 @@ class DMService:
 
         return "\n".join(context_parts) if context_parts else None
 
-    def _format_location_context(self, context: Dict[str, Any]) -> str:
-        """Format location context for the DM prompt."""
+    def _extract_location_from_markdown(self, full_markdown: str, location_key: str) -> Optional[str]:
+        """Extract the specific location text from full markdown.
+
+        This ensures the DM has access to the EXACT verbatim text for the current
+        location, not just the extracted/summarized dm_description.
+        """
+        import re
+
+        if not full_markdown or not location_key:
+            return None
+
+        # Room descriptions follow format: "1. ROOM NAME. Description..."
+        # where ROOM NAME is in ALL CAPS followed by a period
+        # This distinguishes from monster lists like "1. Orcs (1-4)..."
+
+        # Build patterns to find the location section
+        # Key insight: Room names are ALL CAPS followed by a period, e.g. "1. ALCOVES."
+        patterns = [
+            # Pattern: "1. ALCOVES." or "1. & 2. ALCOVES." - room name in ALL CAPS ending with period
+            # The room name must be ALL CAPS (at least 2 chars) followed by a period
+            rf'(?:^|\n)({re.escape(location_key)}\.(?:\s*&\s*\d+\.)?\s+[A-Z][A-Z\s\'-]+\.\s+.*?)(?=\n\d+\.(?:\s*&\s*\d+\.)?\s+[A-Z][A-Z\s\'-]+\.|\Z)',
+            # Pattern: "## 1. Room Name" (markdown header style)
+            rf'(?:^|\n)(##?\s*{re.escape(location_key)}\.?\s+[^\n]+\n.*?)(?=\n##?\s*\d+\.|\Z)',
+            # Pattern: "**1.** Room Name" (bold number style)
+            rf'(?:^|\n)(\*\*{re.escape(location_key)}\.\*\*\s+[^\n]+\n.*?)(?=\n\*\*\d+\.\*\*|\Z)',
+        ]
+
+        for i, pattern in enumerate(patterns):
+            match = re.search(pattern, full_markdown, re.DOTALL)
+            if match:
+                location_text = match.group(1).strip()
+                logger.info(f"[DM] Extracted location {location_key} using pattern {i+1}, {len(location_text)} chars")
+                # Limit to reasonable size (first ~4000 chars of the location)
+                if len(location_text) > 4000:
+                    location_text = location_text[:4000] + "\n\n[...section continues...]"
+                return location_text
+
+        logger.warning(f"[DM] Could not extract location {location_key} from full markdown")
+        return None
+
+    def _format_location_context(self, context: Dict[str, Any], full_markdown: str = "") -> str:
+        """Format location context for the DM prompt.
+
+        Args:
+            context: Structured location data from database
+            full_markdown: Full module markdown to extract verbatim text
+        """
         import json
 
         parts = []
@@ -717,14 +853,31 @@ class DMService:
         if loc:
             parts.append(f"\n## CURRENT LOCATION: {loc.get('name', '')} ({loc.get('key', '')})")
 
+            # CRITICAL: Include verbatim text from full markdown for this location
+            # This is the AUTHORITATIVE source - contains all details like body descriptions
+            location_key = loc.get('key', '')
+            verbatim_text = None
+            if full_markdown and location_key:
+                verbatim_text = self._extract_location_from_markdown(full_markdown, location_key)
+                if verbatim_text:
+                    parts.append("\n### EXACT MODULE TEXT FOR THIS LOCATION (AUTHORITATIVE SOURCE):")
+                    parts.append("Use this text for ALL descriptions, treasure, bodies, and details.")
+                    parts.append("Do NOT invent details not mentioned here.\n")
+                    # Transform party language in the verbatim text too
+                    verbatim_text = self._transform_party_to_solo(verbatim_text)
+                    parts.append(verbatim_text)
+                    parts.append("\n--- END MODULE TEXT ---\n")
+
             if loc.get("read_aloud"):
                 # Transform party language to solo language
                 read_aloud_text = self._transform_party_to_solo(loc["read_aloud"])
                 parts.append(f"\n### READ ALOUD TO PLAYER:")
                 parts.append(f'"{read_aloud_text}"')
 
-            parts.append(f"\n### DM DESCRIPTION:")
-            parts.append(loc.get("dm_description", ""))
+            # Only include dm_description as fallback if we didn't get verbatim text
+            if not verbatim_text:
+                parts.append(f"\n### DM DESCRIPTION:")
+                parts.append(loc.get("dm_description", ""))
 
             if loc.get("features"):
                 parts.append("\n### FEATURES:")
@@ -736,23 +889,35 @@ class DMService:
                 for direction, dest in loc["exits"].items():
                     parts.append(f"- {direction}: {dest}")
 
-            if loc.get("traps"):
+            # TRAPS section - always show, even if empty
+            traps = loc.get("traps", [])
+            if traps:
                 parts.append("\n### TRAPS:")
-                for trap in loc["traps"]:
+                for trap in traps:
                     parts.append(f"- Trigger: {trap.get('trigger', '')}")
                     parts.append(f"  Effect: {trap.get('effect', '')}")
                     parts.append(f"  Detection: {trap.get('detection', '')}")
+            else:
+                parts.append("\n### TRAPS: None")
 
-            if loc.get("secrets"):
+            # SECRETS section - always show, even if empty
+            secrets = loc.get("secrets", [])
+            if secrets:
                 parts.append("\n### SECRETS:")
-                for secret in loc["secrets"]:
+                for secret in secrets:
                     parts.append(f"- {secret.get('type', '')}: {secret.get('description', '')}")
                     parts.append(f"  Detection: {secret.get('detection', '')}")
+            else:
+                parts.append("\n### SECRETS: None - no hidden doors or secret features")
 
-            if loc.get("treasure"):
+            # TREASURE section - always show, even if empty
+            treasure = loc.get("treasure", [])
+            if treasure:
                 parts.append("\n### TREASURE:")
-                for item in loc["treasure"]:
+                for item in treasure:
                     parts.append(f"- {item.get('item', '')}: {item.get('value', '')}")
+            else:
+                parts.append("\n### TREASURE: None - this location contains NO treasure or hidden items")
 
         # NPCs present
         npcs = context.get("npcs", [])
@@ -882,6 +1047,26 @@ class DMService:
                     player_background_text = self._transform_party_to_solo(raw_background)
                     logger.info(f"[DM] Loaded player_background ({len(player_background_text)} chars)")
 
+                # Set initial location key for adventure modules (location "1" is the entrance)
+                if not adventure_state.get("current_location_key"):
+                    # Look up location "1" to get its name and tier
+                    location_context = await retriever.get_location_context(module.id, "1")
+                    if location_context and location_context.get("location"):
+                        loc = location_context["location"]
+                        loc_name = loc.get("name", "Entrance")
+                        adventure_state["current_location_key"] = "1"
+                        adventure_state["current_location"] = loc_name
+                        # Initialize visited_locations with the starting location for map display
+                        adventure_state["visited_locations"] = ["1"]
+                        # Set tier for wandering monster tables
+                        if loc.get("tier"):
+                            adventure_state["current_tier"] = loc["tier"]
+                        if loc.get("dungeon_level"):
+                            adventure_state["current_dungeon_level"] = loc["dungeon_level"]
+                        game_session.adventure_state = adventure_state
+                        await self.db.flush()
+                        logger.info(f"[DM] Set initial location: key='1', name='{loc_name}', tier='{loc.get('tier')}'")
+
         if adventure_title:
             # Adventure-specific opening prompt
             # NOTE: The player has already seen the adventure background/premise in the
@@ -910,17 +1095,30 @@ and ensure the arrival scene fits the module's tone and setting:
             {background_context}
             {f'Starting scene: "{scene_name}" - {scene_desc}' if scene_name else ''}
 
-            CRITICAL INSTRUCTIONS:
-            - The player has ALREADY READ the background/premise in a popup - DO NOT REPEAT IT
-            - Do NOT explain who built this place, why it's abandoned, or the backstory
-            - Do NOT write a prologue - skip straight to the ARRIVAL SCENE
-            - START with {character.name} physically AT the threshold/entrance
-            - Paint the scene with rich sensory details (sights, sounds, smells, atmosphere)
-            - Use the module background to inform your DESCRIPTIONS (e.g., if the module mentions
-              a tower, describe it; if it mentions overgrown vegetation, include that detail)
-            - End with the first interactive moment - the entrance beckons, a choice presents itself
-            - Keep it to 2-3 paragraphs focused on the immediate scene only
-            - Use "you" for solo play, never "the party" or "adventurers"
+            **STARTING LOCATION: {adventure_state.get('current_location', 'the dungeon entrance')} (Location {adventure_state.get('current_location_key', '1')})**
+            Use the EXACT description from the module for this location.
+
+            MANDATORY INSTRUCTIONS - YOU MUST FOLLOW THESE:
+            1. The player has ALREADY READ the background/premise - DO NOT REPEAT backstory
+            2. START with {character.name} physically AT Location {adventure_state.get('current_location_key', '1')} - the module's starting area
+            3. *** CRITICAL: Your description MUST match the module's physical description ***
+               - If the module says "black slate rock" - describe black slate rock
+               - If the module says "wooded hill" - describe a wooded hill
+               - If the module says "wind buffets" - include wind
+               - DO NOT invent details that contradict the module (no towers if none mentioned,
+                 no vines if the module describes bare rock, etc.)
+            4. Use SENSORY details from the MODULE TEXT:
+               - What does the place look like according to the module?
+               - What sounds does the module mention?
+               - What atmospheric conditions are described?
+            5. End with the first interactive moment - the entrance beckons
+
+            FORBIDDEN:
+            - Do NOT write generic fantasy descriptions
+            - Do NOT invent architectural details not in the module
+            - Do NOT describe vegetation, weather, or structures that contradict the source
+            - Keep it to 2-3 paragraphs focused ONLY on what the module describes
+            - Use "you" for solo play, never "the party"
             """
         else:
             # Standard opening prompt for sandbox/improvised play

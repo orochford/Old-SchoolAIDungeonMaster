@@ -97,13 +97,18 @@ def build_adventure_context_section(
     adventure_state: Dict[str, Any],
     adventure_content: Optional[str] = None,
 ) -> str:
-    """Build the adventure context section for the DM system prompt."""
+    """Build the adventure context section for the DM system prompt.
+
+    IMPORTANT: Instructions come BEFORE content to ensure the LLM processes
+    rules before seeing any module data.
+    """
 
     if not adventure_state:
         return ""
 
     current_scene = adventure_state.get("current_scene", "")
     current_location = adventure_state.get("current_location", "")
+    current_location_key = adventure_state.get("current_location_key", "")
     upcoming_scenes = adventure_state.get("upcoming_scenes", [])
     active_threads = adventure_state.get("active_plot_threads", [])
     session_goals = adventure_state.get("session_goals", [])
@@ -132,63 +137,70 @@ def build_adventure_context_section(
     for name, info in list(npcs.items())[:5]:
         npcs_str += f"- {name} ({info.get('attitude', 'unknown')}): {info.get('notes', '')}\n"
 
+    # Build section with INSTRUCTIONS FIRST, then content
     section = f"""
 ## ADVENTURE MODULE: {adventure_title}
 
-### Current Scene
-{current_scene or "No specific scene - explore freely"}
-Location: {current_location or "To be established"}
+### ⚠️ CRITICAL: MODULE FIDELITY RULES (READ FIRST)
 
-### Upcoming Planned Scenes
-{scenes_str or "No specific scenes planned - improvise based on player actions"}
+You are running a PUBLISHED adventure module. You MUST:
+1. Use ONLY locations, NPCs, treasures listed in the content below
+2. If TREASURE says "None" - the location is EMPTY, do not invent items
+3. If SECRETS says "None" - there are no hidden features to find
+4. Quote or paraphrase module descriptions - do not embellish
+5. When player searches an empty area, describe finding NOTHING
 
-### Active Plot Threads
-{threads_str or "None established yet"}
-
-### Known NPCs
-{npcs_str or "No NPCs encountered yet"}
-
-### Session Goals
-{goals_str}
-
-### Adventure Content Reference
-{adventure_content or "Use the adventure context provided in the rules section."}
-
-## MANDATORY ADVENTURE MODULE ADHERENCE
-
-You are running a PUBLISHED adventure module. This is NOT improvised play.
-
-### STRICT REQUIREMENTS:
-1. **ONLY use locations, NPCs, monsters, and events FROM THE MODULE** - The adventure content above is your source of truth
-2. **If the module describes a location, use THAT description** - Do not embellish, replace, or "improve" it
-3. **When players enter an area, describe it AS WRITTEN in the module** - Quote or closely paraphrase the module text
-4. **Use the module's encounter tables and pre-placed encounters** - Do not generate random encounters not specified
-5. **NPCs should behave according to their module descriptions** - Their personalities, motivations, and knowledge are defined
+### ABSOLUTELY FORBIDDEN:
+- Inventing treasure, items, or hidden compartments not listed
+- Creating NPCs or monsters not in the module
+- Adding encounters not specified
+- Embellishing "empty" locations with invented content
 
 ### CRITICAL: LOCATION TRACKING
 - The VALID MODULE LOCATIONS table in your context lists ALL locations in this module
 - When the player moves to a location, use `update_adventure_location` with BOTH:
   - `location`: The location name exactly as shown in the table
   - `location_key`: The key/number from the table (e.g., "1", "2", "31")
-- Example: For "Alcoves" (key: 1), call: `update_adventure_location(location="Alcoves", location_key="1")`
-- DO NOT invent location names. If a location is not in the table, IT DOES NOT EXIST in this module.
-
-### ABSOLUTELY FORBIDDEN:
-- Inventing new locations not in the module (CHECK THE LOCATION TABLE!)
-- Creating NPCs that don't exist in the module
-- Adding encounters or monsters not specified in the module
-- Changing the module's plot or key events
-- Making up treasure or rewards not in the module
-- Creating generic tavern scenes, random travelers, or improvised hooks
-- Embellishing module descriptions with invented details
-- Using location names not found in the VALID MODULE LOCATIONS table
+- DO NOT invent location names. If a location is not in the table, IT DOES NOT EXIST.
 
 ### WHEN UNSURE:
 - Check the VALID MODULE LOCATIONS table in your context
-- Reference the adventure content provided above
-- If content isn't available for the current area, use the update_adventure_location tool to move to a documented area
+- Reference the adventure content provided below
+- If content isn't available for the current area, use the update_adventure_location tool
 - NEVER improvise major content - stay within what the module provides
-- If players try to go somewhere not in the module, guide them back to documented areas using in-world reasons
+- If players try to go somewhere not in the module, guide them back using in-world reasons
+
+### WANDERING MONSTERS (if table provided below):
+- Check for wandering monsters when entering a NEW location (roll 1d6, encounter on 1)
+- Use the `roll_dice` tool with purpose "wandering monster check"
+- If triggered, roll on the wandering monster table to determine what appears
+- Wandering monsters use the stats provided in the table
+- Describe the encounter based on the location and creature behavior
+
+---
+
+### Current Location Data
+Location: {current_location or "To be established"}{f" (Key: {current_location_key})" if current_location_key else ""}
+Scene: {current_scene or "No specific scene - explore freely"}
+
+### Adventure Content Reference
+{adventure_content or "Use the adventure context provided in the rules section."}
+
+---
+
+### Session Planning Context
+
+**Upcoming Planned Scenes:**
+{scenes_str or "No specific scenes planned - improvise based on player actions"}
+
+**Active Plot Threads:**
+{threads_str or "None established yet"}
+
+**Known NPCs:**
+{npcs_str or "No NPCs encountered yet"}
+
+**Session Goals:**
+{goals_str}
 """
 
     return section

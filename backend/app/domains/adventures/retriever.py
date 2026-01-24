@@ -110,17 +110,32 @@ class AdventureDataRetriever:
         Returns:
             Dictionary with wandering monster table data
         """
-        query = (
+        base_query = (
             select(AdventureEncounter)
             .where(AdventureEncounter.module_id == module_id)
             .where(AdventureEncounter.encounter_type == EncounterType.WANDERING)
         )
 
-        if tier:
-            query = query.where(AdventureEncounter.wandering_table_name.ilike(f"%{tier}%"))
+        encounters = []
 
-        result = await self.db.execute(query.order_by(AdventureEncounter.roll_range))
-        encounters = list(result.scalars().all())
+        # Try matching by tier name first
+        if tier:
+            query = base_query.where(AdventureEncounter.wandering_table_name.ilike(f"%{tier}%"))
+            result = await self.db.execute(query.order_by(AdventureEncounter.roll_range))
+            encounters = list(result.scalars().all())
+
+        # If no match by tier, try matching by dungeon level
+        if not encounters and dungeon_level:
+            query = base_query.where(
+                AdventureEncounter.wandering_table_name.ilike(f"%Level {dungeon_level}%")
+            )
+            result = await self.db.execute(query.order_by(AdventureEncounter.roll_range))
+            encounters = list(result.scalars().all())
+
+        # If still no match, get all wandering encounters for this module
+        if not encounters:
+            result = await self.db.execute(base_query.order_by(AdventureEncounter.roll_range))
+            encounters = list(result.scalars().all())
 
         if not encounters:
             return {}
@@ -251,6 +266,8 @@ class AdventureDataRetriever:
             "recommended_levels": f"{module.recommended_level_min or '?'}-{module.recommended_level_max or '?'}",
             "recommended_party_size": f"{module.recommended_party_size_min or '?'}-{module.recommended_party_size_max or '?'}",
             "summary": module.summary,
+            "dm_overview": module.dm_overview,
+            "adventure_flow": module.adventure_flow,
             "location_count": module.location_count,
             "npc_count": module.npc_count,
             "encounter_count": module.encounter_count,
@@ -286,7 +303,7 @@ class AdventureDataRetriever:
             "dm_description": location.dm_description,
             "read_aloud": location.read_aloud_text,
             "features": location.features,
-            "exits": location.exits,
+            "exits": location.exits if isinstance(location.exits, dict) else {},
             "traps": location.traps,
             "secrets": location.secrets,
             "treasure": location.treasure,

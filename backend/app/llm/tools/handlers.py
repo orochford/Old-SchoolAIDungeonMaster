@@ -753,6 +753,20 @@ class ToolHandler:
         elif matched_location:
             adventure_state["current_location_key"] = matched_location.location_key
 
+        # Set tier and dungeon level for wandering monster tables
+        if matched_location:
+            if matched_location.tier:
+                adventure_state["current_tier"] = matched_location.tier
+            if matched_location.dungeon_level:
+                adventure_state["current_dungeon_level"] = matched_location.dungeon_level
+
+        # Track visited locations for map display
+        visited = adventure_state.get("visited_locations", [])
+        current_key = adventure_state.get("current_location_key")
+        if current_key and current_key not in visited:
+            visited.append(current_key)
+            adventure_state["visited_locations"] = visited
+
         # Save to session
         session.adventure_state = adventure_state
 
@@ -1369,6 +1383,7 @@ class ToolHandler:
     ) -> Dict[str, Any]:
         """Display the current dungeon map to the player."""
         from app.domains.maps.map_service import MapService
+        from app.domains.adventures.retriever import AdventureDataRetriever
 
         include_markers = input.get("include_markers", True)
 
@@ -1376,8 +1391,58 @@ class ToolHandler:
         active_map = await map_service.get_active_map(session.campaign_id)
 
         if not active_map:
+            # Try to generate a connection-based map from adventure locations
+            from app.domains.campaigns.models import Campaign
+            campaign_result = await self.db.execute(
+                select(Campaign).where(Campaign.id == session.campaign_id)
+            )
+            campaign = campaign_result.scalar_one_or_none()
+
+            if campaign and campaign.adventure_document_id:
+                retriever = AdventureDataRetriever(self.db)
+                module = await retriever.get_module_for_document(campaign.adventure_document_id)
+
+                if module:
+                    # Get all locations with their exits
+                    locations = await retriever.get_all_locations(module.id)
+                    if locations:
+                        # Get full location data with exits
+                        full_locations = []
+                        for loc in locations:
+                            loc_context = await retriever.get_location_context(module.id, loc['key'])
+                            if loc_context and loc_context.get('location'):
+                                full_locations.append({
+                                    'location_key': loc['key'],
+                                    'name': loc['name'],
+                                    'exits': loc_context['location'].get('exits', {}),
+                                })
+
+                        # Get explored locations from adventure state
+                        adventure_state = session.adventure_state or {}
+                        explored_keys = adventure_state.get('visited_locations', [])
+                        current_key = adventure_state.get('current_location_key')
+
+                        # Generate connection map
+                        map_result = map_service.generate_connection_map(
+                            locations=full_locations,
+                            current_location_key=current_key,
+                            explored_keys=explored_keys,
+                        )
+
+                        return {
+                            "map_id": "connection_map",
+                            "map_name": f"{module.title} - Area Map",
+                            "rendered_map": map_result["rendered_map"],
+                            "width": map_result["width"],
+                            "height": map_result["height"],
+                            "player_position": map_result["player_position"],
+                            "markers": map_result["markers"],
+                            "exploration_progress": f"{len(explored_keys)}/{len(full_locations)} areas explored",
+                            "visible": True,
+                        }
+
             return {
-                "error": "No active map for this campaign",
+                "error": "No map available for this campaign",
                 "visible": True,
             }
 

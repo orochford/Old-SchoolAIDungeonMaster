@@ -644,3 +644,259 @@ class MapService:
         v_floors = (grid[y - 1][x] == '.') + (grid[y + 1][x] == '.')
 
         return (h_walls == 2 and v_floors >= 1) or (v_walls == 2 and h_floors >= 1)
+
+    def generate_connection_map(
+        self,
+        locations: List[Dict[str, Any]],
+        current_location_key: Optional[str] = None,
+        explored_keys: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate a simple ASCII map showing room connections.
+
+        Args:
+            locations: List of location dicts with 'location_key', 'name', and 'exits'
+            current_location_key: The player's current location
+            explored_keys: List of location keys the player has visited
+
+        Returns:
+            Dict with rendered_map, width, height, player_position, and markers
+        """
+        if not locations:
+            return {
+                "rendered_map": "No map data available.",
+                "width": 25,
+                "height": 1,
+                "player_position": None,
+                "markers": [],
+            }
+
+        explored = set(explored_keys or [])
+        if current_location_key:
+            explored.add(current_location_key)
+
+        # Build adjacency graph
+        connections: Dict[str, Dict[str, str]] = {}  # key -> {direction: target_key}
+        names: Dict[str, str] = {}
+
+        for loc in locations:
+            key = str(loc.get('location_key', ''))
+            names[key] = loc.get('name', f'Room {key}')[:12]  # Truncate long names
+            exits = loc.get('exits', {})
+            if isinstance(exits, dict):
+                connections[key] = exits
+
+        # Simple grid layout - place rooms in a rough grid based on connections
+        # Start with room 1 (or first room) at center
+        grid_size = 40
+        cell_width = 14
+        cell_height = 4
+
+        # Calculate grid dimensions
+        num_rooms = len(locations)
+        cols = min(5, max(2, int(num_rooms ** 0.5) + 1))
+        rows = (num_rooms + cols - 1) // cols
+
+        # Position rooms in grid
+        positions: Dict[str, Tuple[int, int]] = {}
+        placed = set()
+
+        # Try to place rooms respecting exit directions
+        def place_room(key: str, row: int, col: int):
+            if key in placed or row < 0 or row >= rows or col < 0 or col >= cols:
+                return
+            if (row, col) in [(p[0], p[1]) for p in positions.values()]:
+                # Find next available spot
+                for r in range(rows):
+                    for c in range(cols):
+                        if (r, c) not in [(p[0], p[1]) for p in positions.values()]:
+                            row, col = r, c
+                            break
+            positions[key] = (row, col)
+            placed.add(key)
+
+        # Start with room 1 or first available
+        start_key = '1' if '1' in names else list(names.keys())[0] if names else None
+        if start_key:
+            place_room(start_key, rows // 2, 0)
+
+            # BFS to place connected rooms
+            queue = [start_key]
+            while queue:
+                current = queue.pop(0)
+                if current not in positions:
+                    continue
+                curr_row, curr_col = positions[current]
+
+                exits = connections.get(current, {})
+                for direction, target in exits.items():
+                    target = str(target)
+                    if target not in placed and target in names:
+                        # Determine position based on direction
+                        dir_lower = direction.lower()
+                        if 'north' in dir_lower or 'up' in dir_lower:
+                            place_room(target, curr_row - 1, curr_col)
+                        elif 'south' in dir_lower or 'down' in dir_lower:
+                            place_room(target, curr_row + 1, curr_col)
+                        elif 'east' in dir_lower or 'right' in dir_lower:
+                            place_room(target, curr_row, curr_col + 1)
+                        elif 'west' in dir_lower or 'left' in dir_lower:
+                            place_room(target, curr_row, curr_col - 1)
+                        else:
+                            # Default: place in next available
+                            place_room(target, curr_row, curr_col + 1)
+                        queue.append(target)
+
+        # Place any unplaced rooms
+        for key in names:
+            if key not in placed:
+                for r in range(rows):
+                    for c in range(cols):
+                        if (r, c) not in [(p[0], p[1]) for p in positions.values()]:
+                            positions[key] = (r, c)
+                            placed.add(key)
+                            break
+                    if key in placed:
+                        break
+
+        # Normalize positions to start at 0
+        if positions:
+            min_row = min(p[0] for p in positions.values())
+            min_col = min(p[1] for p in positions.values())
+            positions = {k: (r - min_row, c - min_col) for k, (r, c) in positions.items()}
+            rows = max(p[0] for p in positions.values()) + 1
+            cols = max(p[1] for p in positions.values()) + 1
+
+        # Build ASCII map
+        map_width = cols * cell_width + 1
+        map_height = rows * cell_height + 1
+        grid = [[' ' for _ in range(map_width)] for _ in range(map_height)]
+
+        # Draw rooms
+        for key, (row, col) in positions.items():
+            x = col * cell_width
+            y = row * cell_height
+
+            is_current = key == current_location_key
+            is_explored = key in explored
+            name = names.get(key, f'Room {key}')
+
+            if not is_explored and not is_current:
+                # Unexplored room - show as ???
+                box_char = '?'
+                display_name = '???'
+            else:
+                box_char = '*' if is_current else '#'
+                display_name = name
+
+            # Draw box
+            # Top border
+            for i in range(cell_width - 2):
+                grid[y][x + 1 + i] = '-' if is_explored or is_current else '?'
+            grid[y][x] = '+' if is_explored or is_current else '?'
+            grid[y][x + cell_width - 1] = '+' if is_explored or is_current else '?'
+
+            # Sides and content
+            for dy in range(1, cell_height - 1):
+                grid[y + dy][x] = '|' if is_explored or is_current else '?'
+                grid[y + dy][x + cell_width - 1] = '|' if is_explored or is_current else '?'
+
+            # Room key/name
+            key_str = f"[{key}]" if is_explored or is_current else "[?]"
+            for i, ch in enumerate(key_str[:cell_width - 4]):
+                if x + 2 + i < map_width:
+                    grid[y + 1][x + 2 + i] = ch
+
+            # Room name (truncated)
+            for i, ch in enumerate(display_name[:cell_width - 4]):
+                if x + 2 + i < map_width:
+                    grid[y + 2][x + 2 + i] = ch
+
+            # Current marker
+            if is_current:
+                grid[y + 1][x + cell_width - 3] = '@'
+
+            # Bottom border
+            for i in range(cell_width - 2):
+                grid[y + cell_height - 1][x + 1 + i] = '-' if is_explored or is_current else '?'
+            grid[y + cell_height - 1][x] = '+' if is_explored or is_current else '?'
+            grid[y + cell_height - 1][x + cell_width - 1] = '+' if is_explored or is_current else '?'
+
+        # Draw connections between explored rooms
+        for key, exits in connections.items():
+            if key not in positions or key not in explored:
+                continue
+            src_row, src_col = positions[key]
+            src_x = src_col * cell_width + cell_width // 2
+            src_y = src_row * cell_height + cell_height // 2
+
+            for direction, target in exits.items():
+                target = str(target)
+                if target not in positions:
+                    continue
+                # Only draw if target is explored or current
+                if target not in explored and target != current_location_key:
+                    continue
+
+                tgt_row, tgt_col = positions[target]
+                tgt_x = tgt_col * cell_width + cell_width // 2
+                tgt_y = tgt_row * cell_height + cell_height // 2
+
+                # Draw simple line
+                is_secret = 'secret' in direction.lower()
+                line_char = '.' if is_secret else '-' if src_y == tgt_y else '|'
+
+                if src_y == tgt_y:  # Horizontal
+                    for x in range(min(src_x, tgt_x), max(src_x, tgt_x) + 1):
+                        if grid[src_y][x] == ' ':
+                            grid[src_y][x] = line_char
+                elif src_x == tgt_x:  # Vertical
+                    for y in range(min(src_y, tgt_y), max(src_y, tgt_y) + 1):
+                        if grid[y][src_x] == ' ':
+                            grid[y][src_x] = line_char
+
+        # Build output
+        lines = [''.join(row).rstrip() for row in grid]
+        # Remove trailing empty lines
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        rendered_map = '\n'.join(lines)
+
+        # Build markers list with x,y coordinates (center of each room)
+        markers = []
+        player_position = None
+
+        for key, (row, col) in positions.items():
+            is_explored = key in explored or key == current_location_key
+            if not is_explored:
+                continue
+
+            # Calculate center of room box
+            center_x = col * cell_width + cell_width // 2
+            center_y = row * cell_height + cell_height // 2
+
+            name = names.get(key, f'Room {key}')
+
+            marker = {
+                "id": f"loc_{key}",
+                "x": center_x,
+                "y": center_y,
+                "symbol": "@" if key == current_location_key else "*",
+                "label": f"[{key}] {name}",
+                "type": "current" if key == current_location_key else "location",
+                "location_key": key,
+                "visited": key in explored,
+            }
+            markers.append(marker)
+
+            if key == current_location_key:
+                player_position = {"x": center_x, "y": center_y}
+
+        return {
+            "rendered_map": rendered_map,
+            "width": map_width,
+            "height": map_height,
+            "player_position": player_position,
+            "markers": markers,
+        }

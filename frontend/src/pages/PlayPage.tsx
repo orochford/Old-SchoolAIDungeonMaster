@@ -502,7 +502,12 @@ export function PlayPage() {
   }
 
   const handleEndSession = () => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      // WebSocket disconnected - notify user and close modal
+      alert('Connection lost. Please refresh the page to reconnect.')
+      setShowEndSession(false)
+      return
+    }
 
     setIsEndingSession(true)
     wsRef.current.send(JSON.stringify({ type: 'end_session' }))
@@ -1001,6 +1006,7 @@ export function PlayPage() {
 
               // Send dice roll to DM via WebSocket so they can reference it
               if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                // First send the dice roll data
                 wsRef.current.send(
                   JSON.stringify({
                     type: 'dice_roll',
@@ -1008,6 +1014,13 @@ export function PlayPage() {
                     rolls: result.rolls,
                     modifier: result.modifier,
                     total: result.total,
+                  })
+                )
+                // Then send a player action so the DM responds to the roll
+                wsRef.current.send(
+                  JSON.stringify({
+                    type: 'player_action',
+                    content: `I rolled ${result.notation} and got ${result.total}.`,
                   })
                 )
               }

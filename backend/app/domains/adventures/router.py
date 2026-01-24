@@ -30,6 +30,7 @@ router = APIRouter()
 async def parse_adventure_background(document_id: UUID):
     """Background task to parse an adventure module using multi-pass extraction."""
     import logging
+    import os
     from app.core.database import AsyncSessionLocal
     from app.domains.adventures.multipass_parser import MultiPassParser
 
@@ -44,6 +45,15 @@ async def parse_adventure_background(document_id: UUID):
 
             # Save the parsing log
             module.parsing_log = parser.parsing_log
+
+            # Copy the source document's markdown path to the module for full-text reference
+            result = await db.execute(
+                select(PDFDocument).where(PDFDocument.id == document_id)
+            )
+            source_doc = result.scalar_one_or_none()
+            if source_doc and source_doc.markdown_path and os.path.exists(source_doc.markdown_path):
+                module.full_markdown_path = source_doc.markdown_path
+                logger.info(f"Set full_markdown_path to {source_doc.markdown_path}")
 
             await db.commit()
             logger.info(f"Successfully parsed adventure document {document_id}")
@@ -315,7 +325,7 @@ async def get_location_context(
 
     # Get connected locations from exits
     connected_locations = []
-    if location.exits:
+    if location.exits and isinstance(location.exits, dict):
         for exit_dest in location.exits.values():
             # Extract location key from exit text (e.g., "Area 2" -> "Area 2")
             dest_key = exit_dest.split("(")[0].strip()

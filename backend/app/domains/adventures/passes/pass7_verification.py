@@ -326,7 +326,7 @@ class VerificationPass(BasePass):
                 dm_description=loc_data.get('dm_description', 'Gap-filled location'),
                 read_aloud_text=loc_data.get('read_aloud_text'),
                 features=loc_data.get('features', []),
-                exits=loc_data.get('exits', {}),
+                exits=loc_data.get('exits', {}) if isinstance(loc_data.get('exits'), dict) else {},
                 traps=loc_data.get('traps', []),
                 secrets=loc_data.get('secrets', []),
                 treasure=loc_data.get('treasure', []),

@@ -22,6 +22,23 @@ from app.domains.adventures.passes.base import BasePass
 logger = logging.getLogger(__name__)
 
 
+# Common patterns that indicate AI-generated content rather than verbatim extraction
+AI_GENERATION_PATTERNS = [
+    "allowing for",
+    "positioned defensively",
+    "speaks to",
+    "provides a",
+    "the air feels",
+    "you notice",
+    "suggests that",
+    "appears to be",
+    "seems to have",
+    "likely used for",
+    "would have been",
+    "creating an atmosphere",
+]
+
+
 PASS2_LOCATION_PROMPT = """You are extracting detailed information about locations from a tabletop RPG adventure module.
 
 ## ADVENTURE CONTEXT
@@ -30,39 +47,77 @@ PASS2_LOCATION_PROMPT = """You are extracting detailed information about locatio
 ## YOUR TASK
 Extract detailed information for the following location(s). For each location:
 
-1. **dm_description**: Complete DM description (everything the DM needs to know)
-2. **read_aloud_text**: Text meant to be read aloud to players (boxed/italicized text)
+1. **dm_description**: QUOTE THE EXACT TEXT from the module for this location.
+   Copy word-for-word - do NOT paraphrase, summarize, or add commentary.
+   If the module says "empty and barren" write exactly "empty and barren".
+   Include ALL text for this location, including special features like magic mouths.
+2. **read_aloud_text**: QUOTE VERBATIM any boxed or italicized read-aloud text.
+   Copy exactly as written - do not paraphrase or "improve" the text.
 3. **features**: Notable features as list of {{"name": "...", "details": "..."}}
 4. **exits**: Exits mapping direction to destination (e.g., {{"north": "2", "secret_east": "7"}})
 5. **visible_items**: Items/features immediately visible to players
 6. **hidden_elements**: Hidden things with {{"type": "...", "location": "...", "detection": "..."}}
 7. **treasure**: Unguarded treasure with {{"item": "...", "value": "...", "location": "..."}}
-8. **traps**: Traps with {{"trigger": "...", "effect": "...", "detection": "...", "disarm": "..."}}
-9. **secrets**: Secret doors/passages with {{"type": "...", "detection": "...", "description": "..."}}
+8. **traps**: ALL traps including:
+   - Physical traps (pit traps, arrow traps, portcullises)
+   - Magical traps (magic mouth spells, glyphs, wards, illusions)
+   - Environmental hazards (collapsing ceilings, gas)
+   Format: {{"name": "...", "trigger": "...", "effect": "...", "detection": "...", "disarm": "...", "is_magical": true/false}}
+9. **secrets**: ALL secret/hidden features including:
+   - Secret doors (one-way or two-way)
+   - Hidden passages
+   - Concealed compartments
+   Format: {{"type": "...", "detection": "...", "description": "...", "destination": "..."}}
 10. **dungeon_level**: Level number (1, 2, etc.)
 11. **tier**: Region name if mentioned (e.g., "Upper Caves")
+
+## CRITICAL - EXTRACT ALL SPECIAL FEATURES
+Pay special attention to:
+- **Magic Mouth** spells - include the EXACT dialogue/message spoken
+- **One-way doors** - note which side can detect/use them
+- **Teleporters** - note destinations and triggers
+- **Illusions** - what they conceal and how to detect
+- **Portcullises and gates** - triggers and mechanisms
+- **Wind corridors** - effects on light sources
 
 ## IMPORTANT
 - Separate DM-only information from player-safe descriptions
 - Note what players see immediately vs what requires searching
 - Include ALL exits including secret ones
+- For magical effects, include the FULL TEXT of any spoken messages or inscriptions
 
 ## OUTPUT FORMAT
 ```json
 {{
   "locations": [
     {{
-      "location_key": "5",
-      "name": "Wizard's Chamber",
-      "dm_description": "Full text for DM...",
-      "read_aloud_text": "Player-safe description...",
-      "features": [{{"name": "Bed", "details": "Simple wooden frame..."}}],
-      "exits": {{"north": "6", "south": "4", "secret_east": "7"}},
-      "visible_items": ["Desk", "Bookshelf"],
-      "hidden_elements": [{{"type": "secret_door", "location": "east wall", "detection": "Search DC 15"}}],
-      "treasure": [{{"item": "Silver candlestick", "value": "25gp", "location": "on desk"}}],
-      "traps": [],
-      "secrets": [{{"type": "secret_door", "detection": "1-in-6", "description": "leads to room 7"}}],
+      "location_key": "1",
+      "name": "Entrance Alcoves",
+      "dm_description": "[Copy exact text from module here - e.g. 'These guardpoints are all empty and barren of any markings.']",
+      "read_aloud_text": "[Copy exact boxed/italicized text - e.g. 'The passage is cold and damp.']",
+      "features": [{{"name": "Alcoves", "details": "Three pairs of alcoves line the corridor..."}}],
+      "exits": {{"north": "2", "secret_east": "7"}},
+      "visible_items": ["Stone alcoves", "Arrow slits"],
+      "hidden_elements": [{{"type": "one-way_door", "location": "second pair of alcoves", "detection": "undetectable from entrance side"}}],
+      "treasure": [],
+      "traps": [
+        {{
+          "name": "Magic Mouth",
+          "trigger": "passing between the third pair of alcoves",
+          "effect": "Two mouths appear and speak: East mouth: 'WHO DARES ENTER THIS PLACE AND INTRUDE UPON THE SANCTUARY OF ITS INHABITANTS?' West mouth: 'ONLY A GROUP OF FOOLHARDY EXPLORERS DOOMED TO CERTAIN DEATH!' Both: 'WOE TO ANY WHO PASS THIS PLACE—THE WRATH OF ZELLIGAR AND ROGAHN WILL BE UPON THEM!' followed by raucous laughter",
+          "detection": "Detect Magic reveals magical aura",
+          "disarm": "Cannot be disarmed - permanent feature",
+          "is_magical": true
+        }}
+      ],
+      "secrets": [
+        {{
+          "type": "one-way_secret_door",
+          "detection": "undetectable from entrance corridor, visible from other side",
+          "description": "Second pair of alcoves contain secret one-way doors for guards to appear behind invaders",
+          "destination": "guard stations"
+        }}
+      ],
       "dungeon_level": 1,
       "tier": "Upper Level"
     }}
@@ -84,6 +139,23 @@ class LocationsPass(BasePass):
     def __init__(self, db):
         super().__init__(db)
         self.batch_size = 5
+
+    def _validate_extraction(self, location_data: dict, source_text: str) -> None:
+        """Warn if extracted descriptions appear AI-generated rather than verbatim.
+
+        Checks for common AI-generation patterns that wouldn't appear in
+        the original module text.
+        """
+        dm_desc = location_data.get('dm_description', '').lower()
+        location_name = location_data.get('name', 'Unknown')
+        source_lower = source_text.lower()
+
+        for pattern in AI_GENERATION_PATTERNS:
+            if pattern in dm_desc and pattern not in source_lower:
+                logger.warning(
+                    f"Possible AI-generated content in '{location_name}': "
+                    f"found '{pattern}' in description but not in source text"
+                )
 
     async def execute(
         self,
@@ -159,6 +231,15 @@ class LocationsPass(BasePass):
                 if not location_key:
                     continue
 
+                # Find source text for this room and validate extraction
+                room_source_text = ""
+                for room in batch:
+                    if str(room.get('location_key', '')) == location_key:
+                        room_source_text = self._extract_location_text(full_text, room)
+                        break
+                if room_source_text:
+                    self._validate_extraction(loc_data, room_source_text)
+
                 # Validate exits is a dict (LLM sometimes returns strings)
                 exits = loc_data.get('exits', {})
                 if not isinstance(exits, dict):
@@ -184,7 +265,7 @@ class LocationsPass(BasePass):
 
                 # Create database record
                 db_location = await self._create_location_record(
-                    module, loc_data, batch, location_ids
+                    module, loc_data, batch, location_ids, room_source_text
                 )
                 if db_location:
                     location_ids[location_key] = db_location.id
@@ -231,7 +312,7 @@ class LocationsPass(BasePass):
         """Extract text for a specific location."""
         # Use full_text if available from preprocessing
         if room.get('full_text'):
-            return room['full_text'][:5000]
+            return room['full_text'][:8000]  # Increased to capture more detail
 
         # Otherwise find by start_text
         start_text = room.get('start_text', '')
@@ -247,8 +328,9 @@ class LocationsPass(BasePass):
         if start_pos == -1:
             return start_text  # Just return what we have
 
-        # Extract ~5000 characters starting from position
-        return full_text[start_pos:start_pos + 5000]
+        # Extract ~8000 characters starting from position to capture full descriptions
+        # including traps, secrets, and magical effects that may follow the main text
+        return full_text[start_pos:start_pos + 8000]
 
     def _get_adjacent_rooms(
         self,
@@ -278,6 +360,7 @@ class LocationsPass(BasePass):
         loc_data: Dict[str, Any],
         batch: List[Dict[str, Any]],
         location_ids: Dict[str, UUID],
+        source_text: str = "",
     ) -> AdventureLocation:
         """Create AdventureLocation database record."""
         location_key = str(loc_data.get('location_key', ''))
@@ -327,6 +410,7 @@ class LocationsPass(BasePass):
             name=loc_name,
             dm_description=loc_desc,
             read_aloud_text=loc_data.get('read_aloud_text'),
+            source_text=source_text,  # Verbatim text from module
             features=loc_data.get('features') or [],
             exits=exits,
             traps=loc_data.get('traps') or [],

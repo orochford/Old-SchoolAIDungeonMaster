@@ -51,19 +51,21 @@ class AdventurePreprocessor:
     ROOM_PATTERNS = [
         # Combined rooms FIRST (more specific): "15. & 16. TELEPORTATION ROOMS."
         # Must be checked before single-room patterns
+        # NOTE: Use \Z instead of $ to match absolute end of string, not end of each line
+        # (MULTILINE mode makes $ match at each line end, breaking non-greedy capture)
         re.compile(
-            r"^(\d+)\.\s*&\s*(\d+)\.\s+([A-Z][A-Z\s']+)\.?\s+(.+?)(?=(?:^|\n)\d+\.\s+[A-Z]|$)",
+            r"^(\d+)\.\s*&\s*(\d+)\.\s+([A-Z][A-Z\s']+)\.?\s+(.+?)(?=(?:^|\n)\d+\.\s+[A-Z]|\Z)",
             re.MULTILINE | re.DOTALL
         ),
         # Classic: NUMBER. ALL CAPS NAME. Description
         # Name can include apostrophe+s (WIZARD'S) and spaces
         re.compile(
-            r"^(\d+)\.\s+([A-Z][A-Z\s']+(?:'[Ss])?[A-Z\s]*)\.?\s+(.+?)(?=(?:^|\n)\d+\.\s+[A-Z]|$)",
+            r"^(\d+)\.\s+([A-Z][A-Z\s']+(?:'[Ss])?[A-Z\s]*)\.?\s+(.+?)(?=(?:^|\n)\d+\.\s+[A-Z]|\Z)",
             re.MULTILINE | re.DOTALL
         ),
         # Bold markdown: NUMBER. **NAME.** Description
         re.compile(
-            r'^\*?\*?(\d+)\.\s*\*?\*?([A-Z][A-Za-z\s\'-]+?)\*?\*?\.?\s*(.+?)(?=(?:^|\n)\*?\*?\d+\.|$)',
+            r'^\*?\*?(\d+)\.\s*\*?\*?([A-Z][A-Za-z\s\'-]+?)\*?\*?\.?\s*(.+?)(?=(?:^|\n)\*?\*?\d+\.|\Z)',
             re.MULTILINE | re.DOTALL
         ),
     ]

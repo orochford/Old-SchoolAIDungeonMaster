@@ -179,19 +179,22 @@ export function SourcebooksPage() {
         </div>
       ) : (
         <>
-          {/* Group by Category/Type */}
+          {/* Group by Category/Type - New Uploads first so users see them immediately */}
           {[
+            { key: null, label: 'New Uploads', description: 'Set the type to organize these' },
             { key: 'adventure', label: 'Adventure Modules' },
             { key: 'rules', label: 'Rulebooks' },
             { key: 'supplement', label: 'Supplements' },
-            { key: null, label: 'Uncategorized' },
-          ].map(({ key, label }) => {
-            const categoryDocs = documents?.filter(d => d.category === key) || []
+          ].map(({ key, label, description }) => {
+            const categoryDocs = (documents?.filter(d => d.category === key) || [])
+              // Sort by created_at descending (newest first)
+              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
             if (categoryDocs.length === 0) return null
 
             return (
               <div key={key || 'uncategorized'} className="mb-8">
-                <h2 className="font-display text-2xl text-parchment-100 mb-4">{label}</h2>
+                <h2 className="font-display text-2xl text-parchment-100 mb-1">{label}</h2>
+                {description && <p className="text-parchment-500 text-sm mb-3">{description}</p>}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {categoryDocs.map((doc) => (
                     <DocumentCard key={doc.id} document={doc} systems={systems || []} />
