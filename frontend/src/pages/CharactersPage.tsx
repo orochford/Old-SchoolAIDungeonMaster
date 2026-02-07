@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, User, Skull, Star, Trash2 } from 'lucide-react'
+import { User, Skull, Trash2 } from 'lucide-react'
 import { api, ApiError } from '@/services/api'
 
 interface Character {
@@ -66,45 +66,49 @@ export function CharactersPage() {
   }
 
   return (
-    <div className="relative lg:pl-[20%]">
-      {/* Decorative side image with fade */}
+    <div className="min-h-[calc(100vh-8rem)] flex">
+      {/* Left atmosphere panel - fixed */}
       <div
-        className="fixed left-0 top-0 w-1/3 h-full pointer-events-none z-0 hidden lg:block"
+        className="hidden lg:block w-[30%] fixed left-0 top-16 bottom-0"
         style={{
           backgroundImage: 'url(/img/tavern.png)',
           backgroundSize: 'cover',
-          backgroundPosition: 'center right',
-          maskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
+          backgroundPosition: 'center',
         }}
-      />
-
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="font-display text-4xl text-parchment-100">Characters</h1>
-        <Link to="/characters/create" className="btn btn-primary flex items-center space-x-2">
-          <Plus className="w-5 h-5" />
-          <span>Create Character</span>
-        </Link>
+      >
+        <div className="absolute inset-0 bg-gradient-to-r from-dungeon-900/60 via-dungeon-900/80 to-dungeon-900" />
       </div>
 
+      {/* Right content panel */}
+      <div className="flex-1 lg:w-[70%] lg:ml-[30%] px-6 lg:px-12 py-12 overflow-y-auto">
+      <div className="max-w-2xl mx-auto lg:mx-0">
+        <div className="mb-8">
+          <h1 className="font-['Cinzel',serif] text-4xl text-[#d4b870] mb-2">Characters</h1>
+          <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif] mb-6">
+            Your adventurers, past and present. Dead characters remain listed for the sake of the record.
+          </p>
+          <Link to="/characters/create" className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-6 py-2 rounded transition-colors inline-block">
+            Create Character
+          </Link>
+        </div>
+
       {isLoading ? (
-        <div className="text-center text-parchment-400 py-12">
+        <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">
           Loading characters...
         </div>
       ) : characters?.length === 0 ? (
-        <div className="card text-center py-12">
-          <User className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-          <h2 className="font-display text-2xl text-parchment-100 mb-2">No Characters Yet</h2>
-          <p className="text-parchment-400 mb-6">
-            Create your first character to begin your adventure
+        <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+          <User className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+          <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">You have no characters prepared.</h2>
+          <p className="text-[#8a8270] mb-6 font-['Crimson_Text',serif]">
+            Most adventures are unforgiving without one.
           </p>
-          <Link to="/characters/create" className="btn btn-primary inline-flex items-center space-x-2">
-            <Plus className="w-5 h-5" />
-            <span>Create Character</span>
+          <Link to="/characters/create" className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded transition-colors inline-block">
+            Create Character
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {characters?.map((character) => (
             <CharacterCard
               key={character.id}
@@ -115,6 +119,8 @@ export function CharactersPage() {
           ))}
         </div>
       )}
+      </div>
+      </div>
     </div>
   )
 }
@@ -129,90 +135,67 @@ function CharacterCard({
   isDeleting: boolean
 }) {
   const isDead = character.status === 'dead'
+  const hpRatio = character.max_hp > 0 ? character.current_hp / character.max_hp : 0
 
   return (
-    <div className={`card ${isDead ? 'opacity-60' : ''}`}>
+    <div className={`group bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 ${isDead ? 'opacity-50' : ''}`}>
+      {/* Header with icon, name, delete */}
       <div className="flex items-start justify-between mb-4">
-        <div>
-          <h3 className="font-display text-xl text-parchment-100">{character.name}</h3>
-          <p className="text-parchment-400">
-            Level {character.level} {character.attributes.character_class || 'Adventurer'}
-          </p>
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-[#0f0d0a] rounded">
+            {isDead ? (
+              <Skull className="w-5 h-5 text-red-500" />
+            ) : (
+              <User className="w-5 h-5 text-[#b8a060]" />
+            )}
+          </div>
+          <div>
+            <Link to={`/characters/${character.id}`} className="hover:text-[#d4b870] transition-colors">
+              <h3 className="font-['Cinzel',serif] text-xl text-[#d4b870]">{character.name}</h3>
+            </Link>
+            <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
+              Level {character.level} {character.attributes.character_class || 'Adventurer'}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {isDead ? (
-            <Skull className="w-6 h-6 text-red-500" />
-          ) : (
-            <Star className="w-6 h-6 text-parchment-500" />
-          )}
-          <button
-            onClick={onDelete}
-            disabled={isDeleting}
-            className="p-1 text-parchment-500 hover:text-red-500 transition-colors disabled:opacity-50"
-            title="Delete character"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
-        </div>
+        <button
+          onClick={onDelete}
+          disabled={isDeleting}
+          className="p-1 text-[#6a6250] opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all disabled:opacity-50"
+          title="Delete character"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
       </div>
 
+      {/* HP bar */}
       <div className="mb-4">
-        <div className="flex justify-between text-sm text-parchment-400 mb-1">
-          <span>HP</span>
-          <span>{character.current_hp} / {character.max_hp}</span>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs text-[#6a6250] font-['Cinzel',serif]">Hit Points</span>
+          <span className="text-xs text-[#8a8270] font-['IBM_Plex_Mono',monospace] tabular-nums">
+            {character.current_hp}/{character.max_hp}
+          </span>
         </div>
-        <div className="h-2 bg-dungeon-700 rounded-full overflow-hidden">
+        <div className="h-2 bg-[#0f0d0a] rounded-full overflow-hidden border border-[rgba(180,160,100,0.1)]">
           <div
             className={`h-full ${
-              character.current_hp / character.max_hp > 0.5
-                ? 'bg-green-600'
-                : character.current_hp / character.max_hp > 0.25
-                ? 'bg-yellow-600'
-                : 'bg-red-600'
+              hpRatio > 0.5 ? 'bg-green-600' : hpRatio > 0.25 ? 'bg-yellow-600' : 'bg-red-600'
             }`}
-            style={{ width: `${(character.current_hp / character.max_hp) * 100}%` }}
+            style={{ width: `${hpRatio * 100}%` }}
           />
         </div>
       </div>
 
-      {character.attributes.ability_scores && (
-        <div className="grid grid-cols-6 gap-2 text-center text-sm">
-          <div>
-            <div className="text-parchment-400">STR</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.strength}</div>
-          </div>
-          <div>
-            <div className="text-parchment-400">INT</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.intelligence}</div>
-          </div>
-          <div>
-            <div className="text-parchment-400">WIS</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.wisdom}</div>
-          </div>
-          <div>
-            <div className="text-parchment-400">DEX</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.dexterity}</div>
-          </div>
-          <div>
-            <div className="text-parchment-400">CON</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.constitution}</div>
-          </div>
-          <div>
-            <div className="text-parchment-400">CHA</div>
-            <div className="text-parchment-100">{character.attributes.ability_scores.charisma}</div>
-          </div>
-        </div>
-      )}
-
-      <div className="mt-4 flex space-x-2">
+      {/* Actions */}
+      <div className="flex items-center gap-2">
         <Link
           to={`/characters/${character.id}`}
-          className="btn btn-secondary flex-1 text-center"
+          className="flex-1 text-center bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] text-sm py-2 px-3 rounded transition-colors"
         >
-          View
+          View Sheet
         </Link>
         {!isDead && (
-          <Link to={`/play/${character.id}`} className="btn btn-primary flex-1 text-center">
+          <Link to={`/play/${character.id}`} className="flex-1 text-center bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] text-sm py-2 px-3 rounded transition-colors">
             Play
           </Link>
         )}

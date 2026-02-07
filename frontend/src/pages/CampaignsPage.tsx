@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Plus, Map, Play, BookOpen, User, Scroll, Trash2, MapPin, Users, Swords } from 'lucide-react'
+import { Map, Play, BookOpen, User, Scroll, Trash2, MapPin, Users, Swords } from 'lucide-react'
 import { api, ApiError } from '@/services/api'
 
 interface Campaign {
@@ -122,7 +122,6 @@ export function CampaignsPage() {
       adventure_document_id: string
       sourcebook_ids: string[]
     }) => {
-      console.log('Creating campaign with data:', data)
       return api.post('/campaigns', {
         name: data.name,
         description: data.description,
@@ -135,7 +134,6 @@ export function CampaignsPage() {
       })
     },
     onSuccess: () => {
-      console.log('Campaign created successfully')
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       setShowCreateModal(false)
     },
@@ -164,58 +162,62 @@ export function CampaignsPage() {
   }
 
   return (
-    <div className="relative lg:pl-[20%]">
-      {/* Decorative side image with fade */}
+    <div className="min-h-[calc(100vh-8rem)] flex">
+      {/* Left atmosphere panel - fixed */}
       <div
-        className="fixed left-0 top-0 w-1/3 h-full pointer-events-none z-0 hidden lg:block"
+        className="hidden lg:block w-[30%] fixed left-0 top-16 bottom-0"
         style={{
           backgroundImage: 'url(/img/windingroad.png)',
           backgroundSize: 'cover',
-          backgroundPosition: 'center right',
-          maskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
+          backgroundPosition: 'center',
         }}
-      />
-
-      <div className="flex items-center justify-between mb-8">
-        <h1 className="font-display text-4xl text-parchment-100">Campaigns</h1>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="btn btn-primary flex items-center space-x-2"
-        >
-          <Plus className="w-5 h-5" />
-          <span>New Campaign</span>
-        </button>
+      >
+        <div className="absolute inset-0 bg-gradient-to-r from-dungeon-900/60 via-dungeon-900/80 to-dungeon-900" />
       </div>
 
-      {isLoading ? (
-        <div className="text-center text-parchment-400 py-12">
-          Loading campaigns...
-        </div>
-      ) : campaigns?.length === 0 ? (
-        <div className="card text-center py-12">
-          <Map className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-          <h2 className="font-display text-2xl text-parchment-100 mb-2">No Campaigns Yet</h2>
-          <p className="text-parchment-400 mb-6">
-            Create your first campaign to start adventuring
+      {/* Right content panel */}
+      <div className="flex-1 lg:w-[70%] lg:ml-[30%] px-6 lg:px-12 py-12 overflow-y-auto">
+      <div className="max-w-2xl mx-auto lg:mx-0">
+        <div className="mb-8">
+          <h1 className="font-['Cinzel',serif] text-4xl text-[#d4b870] mb-2">Adventures</h1>
+          <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif] mb-6">
+            Each adventure represents a single expedition into danger. Time passes. Consequences persist.
           </p>
           <button
             onClick={() => setShowCreateModal(true)}
-            className="btn btn-primary inline-flex items-center space-x-2"
+            className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-6 py-2 rounded transition-colors"
           >
-            <Plus className="w-5 h-5" />
-            <span>New Campaign</span>
+            Begin New Adventure
+          </button>
+        </div>
+
+      {isLoading ? (
+        <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">
+          Loading campaigns...
+        </div>
+      ) : campaigns?.length === 0 ? (
+        <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+          <Map className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+          <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">No adventure is currently underway.</h2>
+          <p className="text-[#8a8270] mb-6 font-['Crimson_Text',serif]">
+            When you are ready, begin one.
+          </p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded transition-colors"
+          >
+            Begin an Adventure
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {campaigns?.map((campaign) => {
             const adventureModule = getAdventureModule(campaign.adventure_document_id)
             return (
-              <div key={campaign.id} className="card overflow-hidden">
+              <div key={campaign.id} className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 overflow-hidden">
                 {/* Cover Image */}
                 {campaign.adventure_document_id && (
-                  <div className="relative -mx-6 -mt-6 mb-4 h-32 bg-dungeon-900">
+                  <div className="relative -mx-6 -mt-6 mb-4 h-32 bg-[#0f0d0a]">
                     <img
                       src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/sourcebooks/${campaign.adventure_document_id}/cover`}
                       alt="Module cover"
@@ -225,17 +227,17 @@ export function CampaignsPage() {
                         (e.target as HTMLImageElement).style.display = 'none'
                       }}
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-dungeon-800 to-transparent" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#141210] to-transparent" />
                   </div>
                 )}
                 <div className="flex items-start justify-between mb-2">
-                  <h3 className="font-display text-xl text-parchment-100">{campaign.name}</h3>
+                  <h3 className="font-['Cinzel',serif] text-xl text-[#d4b870]">{campaign.name}</h3>
                   <div className="flex items-center gap-2">
                     <span
-                      className={`text-xs px-2 py-1 rounded ${
+                      className={`text-xs px-2 py-1 rounded font-['Cinzel',serif] ${
                         campaign.status === 'active'
-                          ? 'bg-green-900 text-green-300'
-                          : 'bg-dungeon-700 text-parchment-400'
+                          ? 'bg-green-900/50 text-green-400'
+                          : 'bg-[rgba(255,245,220,0.03)] text-[#8a8270]'
                       }`}
                     >
                       {campaign.status}
@@ -246,52 +248,51 @@ export function CampaignsPage() {
                           deleteMutation.mutate(campaign.id)
                         }
                       }}
-                      className="p-1 text-parchment-500 hover:text-red-400 transition-colors"
+                      className="p-1 text-[#6a6250] hover:text-red-400 transition-colors"
                       title="Delete campaign"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
-                <p className="text-parchment-500 text-xs mb-3">{getSystemName(campaign.rpg_system_id)}</p>
+                <p className="text-[#6a6250] text-xs mb-3 font-['Crimson_Text',serif]">{getSystemName(campaign.rpg_system_id)}</p>
 
                 {campaign.settings?.character_id && (
-                  <div className="flex items-center text-parchment-300 text-sm mb-1">
-                    <User className="w-4 h-4 mr-2 text-parchment-500" />
+                  <div className="flex items-center text-[#c8c0aa] text-sm mb-1 font-['Crimson_Text',serif]">
+                    <User className="w-4 h-4 mr-2 text-[#b8a060]" />
                     {getCharacterDisplay(campaign.settings.character_id)}
                   </div>
                 )}
 
                 {campaign.adventure_document_id && (
-                  <div className="flex items-center text-parchment-300 text-sm mb-1">
-                    <Scroll className="w-4 h-4 mr-2 text-parchment-500" />
+                  <div className="flex items-center text-[#c8c0aa] text-sm mb-1 font-['Crimson_Text',serif]">
+                    <Scroll className="w-4 h-4 mr-2 text-[#b8a060]" />
                     {getAdventureName(campaign.adventure_document_id)}
                   </div>
                 )}
 
                 {/* Parsed adventure module stats */}
                 {adventureModule && adventureModule.parsing_status === 'completed' && (
-                  <div className="mt-2 p-2 bg-dungeon-900 rounded border border-dungeon-700">
-                    <div className="text-parchment-400 text-xs mb-1">Parsed Module Data:</div>
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div className="flex items-center text-parchment-300">
-                        <MapPin className="w-3 h-3 mr-1 text-purple-400" />
-                        {adventureModule.location_count} locations
+                  <div className="mt-2 p-2 bg-[#0f0d0a] rounded border border-[rgba(180,160,100,0.1)]">
+                    <div className="grid grid-cols-3 gap-2 text-xs font-['IBM_Plex_Mono',monospace]">
+                      <div className="flex items-center text-[#8a8270]">
+                        <MapPin className="w-3 h-3 mr-1 text-[#b8a060]" />
+                        {adventureModule.location_count} loc
                       </div>
-                      <div className="flex items-center text-parchment-300">
-                        <Users className="w-3 h-3 mr-1 text-blue-400" />
+                      <div className="flex items-center text-[#8a8270]">
+                        <Users className="w-3 h-3 mr-1 text-[#b8a060]" />
                         {adventureModule.npc_count} NPCs
                       </div>
-                      <div className="flex items-center text-parchment-300">
-                        <Swords className="w-3 h-3 mr-1 text-red-400" />
-                        {adventureModule.encounter_count} encounters
+                      <div className="flex items-center text-[#8a8270]">
+                        <Swords className="w-3 h-3 mr-1 text-[#b8a060]" />
+                        {adventureModule.encounter_count} enc
                       </div>
                     </div>
                   </div>
                 )}
 
                 {campaign.description && (
-                  <p className="text-parchment-400 text-sm mt-3 mb-4">
+                  <p className="text-[#8a8270] text-sm mt-3 mb-4 font-['Crimson_Text',serif]">
                     {campaign.description}
                   </p>
                 )}
@@ -299,7 +300,7 @@ export function CampaignsPage() {
                 <div className="flex justify-end mt-4">
                   <Link
                     to={`/play/${campaign.settings?.character_id || ''}/${campaign.id}`}
-                    className="btn btn-primary btn-sm flex items-center space-x-1"
+                    className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] text-sm px-3 py-1.5 rounded flex items-center space-x-1 transition-colors"
                   >
                     <Play className="w-4 h-4" />
                     <span>Play</span>
@@ -310,6 +311,7 @@ export function CampaignsPage() {
           })}
         </div>
       )}
+      </div>
 
       {/* Create Modal */}
       {showCreateModal && (
@@ -322,6 +324,7 @@ export function CampaignsPage() {
           sourcebooks={sourcebooks || []}
         />
       )}
+      </div>
     </div>
   )
 }
@@ -363,18 +366,12 @@ function CreateCampaignModal({
     }
   }, [systems, systemId])
 
-  // Debug: log what we're working with
-  console.log('Selected systemId:', systemId)
-  console.log('All sourcebooks:', sourcebooks.length, sourcebooks.map(s => ({ id: s.id, sys: s.rpg_system_id, cat: s.category })))
-
   // Filter by selected system
   const systemCharacters = characters.filter((c) => c.rpg_system_id === systemId)
   const systemSourcebooks = sourcebooks.filter((s) => s.rpg_system_id === systemId)
   const systemAdventures = systemSourcebooks.filter((s) => s.category === 'adventure')
   const systemRules = systemSourcebooks.filter((s) => s.category === 'rules' || s.category === 'supplement')
   const uncategorizedCount = systemSourcebooks.filter((s) => !s.category).length
-
-  console.log('Filtered systemSourcebooks:', systemSourcebooks.length, 'adventures:', systemAdventures.length)
 
   // Reset selections when system changes
   useEffect(() => {
@@ -394,28 +391,28 @@ function CreateCampaignModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="card w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <h2 className="font-display text-2xl text-parchment-100 mb-6">New Campaign</h2>
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-6">New Adventure</h2>
 
         {/* Campaign Name */}
         <div className="mb-4">
-          <label className="label block mb-2">Campaign Name</label>
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2">Adventure Name</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="The Lost Temple of Moldvay"
-            className="input w-full"
+            className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif] placeholder:text-[#6a6250]"
           />
         </div>
 
         {/* RPG System */}
         <div className="mb-4">
-          <label className="label block mb-2">Game System</label>
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2">Game System</label>
           <select
             value={systemId}
             onChange={(e) => setSystemId(e.target.value)}
-            className="input w-full"
+            className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
           >
             {systems.map((sys) => (
               <option key={sys.id} value={sys.id}>
@@ -427,19 +424,19 @@ function CreateCampaignModal({
 
         {/* Character Selection */}
         <div className="mb-4">
-          <label className="label block mb-2 flex items-center">
-            <User className="w-4 h-4 mr-2" />
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2 flex items-center">
+            <User className="w-4 h-4 mr-2 text-[#b8a060]" />
             Character
           </label>
           {systemCharacters.length === 0 ? (
-            <p className="text-parchment-500 text-sm">
-              No characters for this system. <Link to="/characters/create" className="text-parchment-300 underline">Create one</Link>
+            <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
+              No characters for this system. <Link to="/characters/create" className="text-[#b8a060] underline hover:text-[#d4b870]">Create one</Link>
             </p>
           ) : (
             <select
               value={characterId}
               onChange={(e) => setCharacterId(e.target.value)}
-              className="input w-full"
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
             >
               <option value="">Select a character...</option>
               {systemCharacters.map((char) => (
@@ -453,24 +450,24 @@ function CreateCampaignModal({
 
         {/* Adventure Selection */}
         <div className="mb-4">
-          <label className="label block mb-2 flex items-center">
-            <Scroll className="w-4 h-4 mr-2" />
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2 flex items-center">
+            <Scroll className="w-4 h-4 mr-2 text-[#b8a060]" />
             Adventure Module (optional)
           </label>
           {systemAdventures.length === 0 ? (
-            <p className="text-parchment-500 text-sm">
+            <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
               No adventures for this system.
               {uncategorizedCount > 0 ? (
-                <> You have {uncategorizedCount} uncategorized sourcebook(s). <Link to="/sourcebooks" className="text-parchment-300 underline">Set their category</Link> to "Adventure"</>
+                <> You have {uncategorizedCount} uncategorized sourcebook(s). <Link to="/sourcebooks" className="text-[#b8a060] underline hover:text-[#d4b870]">Set their category</Link> to "Adventure"</>
               ) : (
-                <> <Link to="/sourcebooks" className="text-parchment-300 underline">Upload one</Link> and set its category to "Adventure"</>
+                <> <Link to="/sourcebooks" className="text-[#b8a060] underline hover:text-[#d4b870]">Upload one</Link> and set its category to "Adventure"</>
               )}
             </p>
           ) : (
             <select
               value={adventureId}
               onChange={(e) => setAdventureId(e.target.value)}
-              className="input w-full"
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
             >
               <option value="">Select an adventure...</option>
               {systemAdventures.map((adv) => (
@@ -484,32 +481,32 @@ function CreateCampaignModal({
 
         {/* Sourcebooks/Rules Selection */}
         <div className="mb-4">
-          <label className="label block mb-2 flex items-center">
-            <BookOpen className="w-4 h-4 mr-2" />
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2 flex items-center">
+            <BookOpen className="w-4 h-4 mr-2 text-[#b8a060]" />
             Rulebooks & Supplements (optional)
           </label>
           {systemRules.length === 0 ? (
-            <p className="text-parchment-500 text-sm">
+            <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
               No rulebooks for this system.
               {uncategorizedCount > 0 && (
-                <> Set sourcebook categories on the <Link to="/sourcebooks" className="text-parchment-300 underline">Sourcebooks page</Link></>
+                <> Set sourcebook categories on the <Link to="/sourcebooks" className="text-[#b8a060] underline hover:text-[#d4b870]">Sourcebooks page</Link></>
               )}
             </p>
           ) : (
-            <div className="space-y-2 max-h-40 overflow-y-auto border border-dungeon-600 rounded p-2">
+            <div className="space-y-2 max-h-40 overflow-y-auto border border-[rgba(180,160,100,0.1)] rounded p-2 bg-[#0f0d0a]">
               {systemRules.map((sb) => (
                 <label
                   key={sb.id}
-                  className="flex items-center space-x-2 text-parchment-200 text-sm cursor-pointer hover:bg-dungeon-700 p-1 rounded"
+                  className="flex items-center space-x-2 text-[#c8c0aa] text-sm cursor-pointer hover:bg-[rgba(255,245,220,0.03)] p-1 rounded font-['Crimson_Text',serif]"
                 >
                   <input
                     type="checkbox"
                     checked={selectedSourcebookIds.includes(sb.id)}
                     onChange={() => toggleSourcebook(sb.id)}
-                    className="rounded border-dungeon-600"
+                    className="rounded border-[rgba(180,160,100,0.1)] bg-[#0f0d0a]"
                   />
                   <span>{sb.title || sb.original_filename}</span>
-                  <span className="text-parchment-500 text-xs">({sb.category})</span>
+                  <span className="text-[#6a6250] text-xs">({sb.category})</span>
                 </label>
               ))}
             </div>
@@ -518,28 +515,23 @@ function CreateCampaignModal({
 
         {/* Description */}
         <div className="mb-4">
-          <label className="label block mb-2">Description (optional)</label>
+          <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-2">Description (optional)</label>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="A classic dungeon crawl..."
-            className="input w-full h-20 resize-none"
+            className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif] h-20 resize-none placeholder:text-[#6a6250]"
           />
         </div>
 
-        {/* Debug info */}
-        <p className="text-parchment-600 text-xs mb-4">
-          Sourcebooks for this system: {systemSourcebooks.length} total ({systemAdventures.length} adventures, {systemRules.length} rules/supplements, {uncategorizedCount} uncategorized)
-        </p>
-
         {!canCreate && (
-          <p className="text-yellow-500 text-sm mb-4">
+          <p className="text-[#b8a060] text-sm mb-4 font-['Crimson_Text',serif]">
             Required: {!name && 'Campaign name, '}{!characterId && 'Character'}
           </p>
         )}
 
         <div className="flex justify-end space-x-2">
-          <button onClick={onClose} className="btn btn-secondary">
+          <button onClick={onClose} className="bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] px-4 py-2 rounded transition-colors">
             Cancel
           </button>
           <button
@@ -554,7 +546,7 @@ function CreateCampaignModal({
               })
             }
             disabled={!canCreate || isLoading}
-            className="btn btn-primary"
+            className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded transition-colors disabled:opacity-50"
           >
             {isLoading ? 'Creating...' : 'Create Campaign'}
           </button>

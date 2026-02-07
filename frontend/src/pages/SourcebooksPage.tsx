@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, BookOpen, CheckCircle, XCircle, Loader, Trash2, RefreshCw, Wand2, ChevronDown, ChevronUp } from 'lucide-react'
+import { Upload, BookOpen, CheckCircle, XCircle, Loader, Trash2, RefreshCw, Wand2 } from 'lucide-react'
 import { api } from '@/services/api'
 
 interface PDFDocument {
@@ -108,20 +108,28 @@ export function SourcebooksPage() {
   }
 
   return (
-    <div className="relative lg:pl-[20%]">
-      {/* Decorative side image with fade */}
+    <div className="min-h-[calc(100vh-8rem)] flex">
+      {/* Left atmosphere panel - fixed */}
       <div
-        className="fixed left-0 top-0 w-1/3 h-full pointer-events-none z-0 hidden lg:block"
+        className="hidden lg:block w-[30%] fixed left-0 top-16 bottom-0"
         style={{
           backgroundImage: 'url(/img/library.png)',
           backgroundSize: 'cover',
-          backgroundPosition: 'center right',
-          maskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
+          backgroundPosition: 'center',
         }}
-      />
+      >
+        <div className="absolute inset-0 bg-gradient-to-r from-dungeon-900/60 via-dungeon-900/80 to-dungeon-900" />
+      </div>
 
-      <h1 className="font-display text-4xl text-parchment-100 mb-8">Sourcebooks</h1>
+      {/* Right content panel */}
+      <div className="flex-1 lg:w-[70%] lg:ml-[30%] px-6 lg:px-12 py-12 overflow-y-auto">
+      <div className="max-w-2xl mx-auto lg:mx-0">
+        <div className="mb-8">
+          <h1 className="font-['Cinzel',serif] text-4xl text-[#d4b870] mb-2">Library</h1>
+          <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
+            Stored adventure modules and reference material. Only PDFs you provide are used in play.
+          </p>
+        </div>
 
       {/* Upload area */}
       <div
@@ -131,19 +139,32 @@ export function SourcebooksPage() {
         }}
         onDragLeave={() => setDragActive(false)}
         onDrop={handleDrop}
-        className={`card border-2 border-dashed mb-8 p-8 text-center transition-colors ${
+        onClick={() => !uploadMutation.isPending && fileInputRef.current?.click()}
+        className={`bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 mb-8 cursor-pointer transition-all ${
           dragActive
-            ? 'border-parchment-500 bg-dungeon-700'
-            : 'border-dungeon-600 hover:border-parchment-600'
+            ? 'border-[#b8a060] bg-[rgba(180,160,80,0.06)]'
+            : 'hover:border-[rgba(180,160,100,0.2)]'
         }`}
       >
-        <Upload className="w-12 h-12 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-xl text-parchment-100 mb-2">
-          Upload Sourcebooks
-        </h2>
-        <p className="text-parchment-400 mb-4">
-          Drag and drop PDF files here, or click to browse
-        </p>
+        <div className="flex items-center gap-5">
+          <div className="p-4 rounded-lg bg-[#0f0d0a]">
+            <Upload className="w-8 h-8 text-[#b8a060]" />
+          </div>
+          <div className="flex-1">
+            <h2 className="font-['Cinzel',serif] text-xl text-[#d4b870] mb-1">
+              Add to Library
+            </h2>
+            <p className="text-[#8a8270] text-sm font-['Crimson_Text',serif]">
+              {dragActive ? (
+                <span className="text-[#c8c0aa]">Release to upload</span>
+              ) : uploadMutation.isPending ? (
+                'Processing...'
+              ) : (
+                'Drop PDF files here, or click to browse'
+              )}
+            </p>
+          </div>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -152,29 +173,22 @@ export function SourcebooksPage() {
           onChange={handleFileSelect}
           className="hidden"
         />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="btn btn-primary"
-          disabled={uploadMutation.isPending}
-        >
-          {uploadMutation.isPending ? 'Uploading...' : 'Browse Files'}
-        </button>
       </div>
 
       {/* Document list */}
       {isLoading ? (
-        <div className="text-center text-parchment-400 py-12">
+        <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">
           Loading sourcebooks...
         </div>
       ) : documents?.length === 0 ? (
-        <div className="card text-center py-12">
-          <BookOpen className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-          <h2 className="font-display text-2xl text-parchment-100 mb-2">No Sourcebooks Yet</h2>
-          <p className="text-parchment-400">
-            Upload your B/X D&D or OSR rulebooks and adventures to enable rule-accurate gameplay.
+        <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+          <BookOpen className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+          <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">The Shelves Are Empty</h2>
+          <p className="text-[#8a8270] font-['Crimson_Text',serif]">
+            Add your rulebooks and adventure modules to begin.
           </p>
-          <p className="text-parchment-500 text-sm mt-2">
-            Supports Basic/Expert D&D, Old-School Essentials, Labyrinth Lord, and other OSR retroclones.
+          <p className="text-[#6a6250] text-sm mt-2 font-['Crimson_Text',serif]">
+            Compatible with B/X, Old-School Essentials, and similar retroclones.
           </p>
         </div>
       ) : (
@@ -193,9 +207,9 @@ export function SourcebooksPage() {
 
             return (
               <div key={key || 'uncategorized'} className="mb-8">
-                <h2 className="font-display text-2xl text-parchment-100 mb-1">{label}</h2>
-                {description && <p className="text-parchment-500 text-sm mb-3">{description}</p>}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-1">{label}</h2>
+                {description && <p className="text-[#6a6250] text-sm mb-3 font-['Crimson_Text',serif]">{description}</p>}
+                <div className="space-y-4">
                   {categoryDocs.map((doc) => (
                     <DocumentCard key={doc.id} document={doc} systems={systems || []} />
                   ))}
@@ -205,6 +219,8 @@ export function SourcebooksPage() {
           })}
         </>
       )}
+      </div>
+      </div>
     </div>
   )
 }
@@ -283,191 +299,195 @@ function DocumentCard({ document, systems }: { document: PDFDocument; systems: R
   }[document.status]
 
   return (
-    <div className="card overflow-hidden">
-      {/* Cover Image */}
-      <div className="relative -mx-6 -mt-6 mb-3 h-32 bg-dungeon-900">
-        <img
-          src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/sourcebooks/${document.id}/cover`}
-          alt="Cover"
-          className="w-full h-full object-cover opacity-80"
-          onError={(e) => {
-            (e.target as HTMLImageElement).style.display = 'none'
-          }}
-        />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <BookOpen className="w-12 h-12 text-parchment-600 opacity-30" />
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-t from-dungeon-800 to-transparent" />
-        {/* Status badge */}
-        <div className="absolute top-2 right-2">
-          <StatusIcon
-            className={`w-5 h-5 ${statusColor} ${
-              document.status === 'processing' || document.status === 'pending' ? 'animate-spin' : ''
-            }`}
+    <div className="bg-[#141210] border border-[rgba(180,160,100,0.15)] rounded-lg overflow-hidden hover:border-[rgba(180,160,100,0.3)] transition-colors">
+      <div className="flex">
+        {/* Cover Image - Left side */}
+        <div className="relative w-32 min-h-[140px] flex-shrink-0 bg-dungeon-900">
+          <img
+            src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/sourcebooks/${document.id}/cover`}
+            alt="Cover"
+            className="w-full h-full object-cover opacity-90"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none'
+            }}
           />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <BookOpen className="w-10 h-10 text-parchment-600 opacity-30" />
+          </div>
+          {/* Status badge */}
+          <div className="absolute top-2 left-2">
+            <StatusIcon
+              className={`w-5 h-5 ${statusColor} ${
+                document.status === 'processing' || document.status === 'pending' ? 'animate-spin' : ''
+              }`}
+            />
+          </div>
         </div>
-      </div>
 
-      {/* Title */}
-      <h3 className="text-parchment-100 font-semibold text-sm truncate mb-1" title={document.title || document.original_filename}>
-        {document.title || document.original_filename}
-      </h3>
-      <div className="text-parchment-500 text-xs mb-2">
-        {document.page_count && `${document.page_count} pages`}
-        {document.chunk_count > 0 && ` • ${document.chunk_count} chunks`}
-      </div>
+        {/* Content - Right side */}
+        <div className="flex-1 p-4">
+          {/* Title */}
+          <h3 className="text-[#d4b870] font-['Cinzel',serif] text-lg mb-1 truncate" title={document.title || document.original_filename}>
+            {document.title || document.original_filename}
+          </h3>
+          <div className="text-[#6a6250] text-xs mb-2 font-['Crimson_Text',serif]">
+            {document.page_count && `${document.page_count} pages`}
+            {document.chunk_count > 0 && ` • ${document.chunk_count} chunks indexed`}
+          </div>
 
-      {/* Description */}
-      {isEditingDescription ? (
-        <div className="mb-2">
-          <textarea
-            value={descriptionInput}
-            onChange={(e) => setDescriptionInput(e.target.value)}
-            placeholder="Add a brief description..."
-            className="w-full bg-dungeon-700 border border-dungeon-600 text-parchment-200 text-xs rounded px-2 py-1 resize-none"
-            rows={2}
-            autoFocus
-          />
-          <div className="flex gap-1 mt-1">
-            <button
-              onClick={() => updateMutation.mutate({ description: descriptionInput })}
-              disabled={updateMutation.isPending}
-              className="px-2 py-0.5 text-xs bg-green-700 text-white rounded hover:bg-green-600"
+          {/* Description */}
+          {isEditingDescription ? (
+            <div className="mb-3">
+              <textarea
+                value={descriptionInput}
+                onChange={(e) => setDescriptionInput(e.target.value)}
+                placeholder="Add a brief description..."
+                className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.2)] text-[#c8c0aa] text-sm rounded px-2 py-1.5 resize-none font-['Crimson_Text',serif]"
+                rows={2}
+                autoFocus
+              />
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => updateMutation.mutate({ description: descriptionInput })}
+                  disabled={updateMutation.isPending}
+                  className="px-3 py-1 text-xs bg-[#b8a060] text-[#0f0d0a] rounded hover:bg-[#d4b870] font-medium"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setIsEditingDescription(false)
+                    setDescriptionInput(document.description || '')
+                  }}
+                  className="px-3 py-1 text-xs text-[#8a8270] hover:text-[#c8c0aa]"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              onClick={() => setIsEditingDescription(true)}
+              className="text-[#8a8270] text-sm mb-3 cursor-pointer hover:text-[#c8c0aa] font-['Crimson_Text',serif] line-clamp-2"
+              title="Click to edit description"
             >
-              Save
+              {document.description || <span className="text-[#5a5245] italic">Click to add description...</span>}
+            </div>
+          )}
+
+          {/* Controls row */}
+          <div className="flex items-center gap-2">
+            <select
+              value={document.category || ''}
+              onChange={(e) => updateMutation.mutate({ category: e.target.value })}
+              className="bg-[#0f0d0a] border border-[rgba(180,160,100,0.2)] text-[#c8c0aa] text-xs rounded px-2 py-1.5"
+            >
+              <option value="">Set type...</option>
+              <option value="rules">Rulebook</option>
+              <option value="adventure">Adventure</option>
+              <option value="supplement">Supplement</option>
+            </select>
+            <button
+              onClick={() => reprocessMutation.mutate()}
+              disabled={reprocessMutation.isPending || document.status === 'processing' || document.status === 'pending'}
+              className="p-1.5 text-[#6a6250] hover:text-[#b8a060] hover:bg-[#0f0d0a] rounded transition-colors disabled:opacity-50"
+              title="Rescan PDF"
+            >
+              <RefreshCw className={`w-4 h-4 ${reprocessMutation.isPending ? 'animate-spin' : ''}`} />
             </button>
             <button
-              onClick={() => {
-                setIsEditingDescription(false)
-                setDescriptionInput(document.description || '')
-              }}
-              className="px-2 py-0.5 text-xs text-parchment-400 hover:text-parchment-200"
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={deleteMutation.isPending}
+              className="p-1.5 text-[#6a6250] hover:text-red-400 hover:bg-[#0f0d0a] rounded transition-colors"
+              title="Delete"
             >
-              Cancel
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
         </div>
-      ) : (
-        <div
-          onClick={() => setIsEditingDescription(true)}
-          className="text-parchment-400 text-xs mb-2 cursor-pointer hover:text-parchment-300 min-h-[1.5rem]"
-          title="Click to edit description"
-        >
-          {document.description || <span className="text-parchment-600 italic">Click to add description...</span>}
-        </div>
-      )}
-
-      {/* Controls row */}
-      <div className="flex items-center gap-1 mb-2">
-        <select
-          value={document.category || ''}
-          onChange={(e) => updateMutation.mutate({ category: e.target.value })}
-          className="flex-1 bg-dungeon-700 border border-dungeon-600 text-parchment-200 text-xs rounded px-1 py-1"
-        >
-          <option value="">Type...</option>
-          <option value="rules">Rulebook</option>
-          <option value="adventure">Adventure</option>
-          <option value="supplement">Supplement</option>
-        </select>
-        <button
-          onClick={() => reprocessMutation.mutate()}
-          disabled={reprocessMutation.isPending || document.status === 'processing' || document.status === 'pending'}
-          className="p-1.5 text-parchment-400 hover:text-blue-400 hover:bg-dungeon-700 rounded transition-colors disabled:opacity-50"
-          title="Rescan"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${reprocessMutation.isPending ? 'animate-spin' : ''}`} />
-        </button>
-        <button
-          onClick={() => setShowDeleteConfirm(true)}
-          disabled={deleteMutation.isPending}
-          className="p-1.5 text-parchment-400 hover:text-red-400 hover:bg-dungeon-700 rounded transition-colors"
-          title="Delete"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
       </div>
 
-      {document.processing_error && (
-        <div className="text-red-400 text-sm mt-2">{document.processing_error}</div>
-      )}
-
-      {/* Adventure parsing section - only shown for adventure documents */}
+      {/* Adventure parsing section - shown below the main card content */}
       {document.status === 'completed' && document.category === 'adventure' && (
-        <div className="mt-2 pt-2 border-t border-dungeon-600">
-          {/* Status line */}
-          <div className="flex items-center gap-2 mb-2">
-            <Wand2 className="w-4 h-4 text-purple-400 flex-shrink-0" />
-            {adventureModule?.parsing_status === 'completed' && (
-              <span className="text-green-400 text-xs">{adventureModule.location_count} loc, {adventureModule.npc_count} NPCs</span>
-            )}
-            {adventureModule?.parsing_status === 'processing' && (
-              <span className="text-blue-400 text-xs flex items-center gap-1">
-                <Loader className="w-3 h-3 animate-spin" />
-                {adventureModule.parsing_progress}%
-              </span>
-            )}
-            {adventureModule?.parsing_status === 'failed' && (
-              <span className="text-red-400 text-xs truncate" title={adventureModule.parsing_error || ''}>Failed</span>
-            )}
-            {!adventureModule && (
-              <span className="text-parchment-500 text-xs">Not parsed</span>
-            )}
-          </div>
+        <div className="px-4 py-3 border-t border-[rgba(180,160,100,0.1)] bg-[#0f0d0a]">
+          <div className="flex items-center justify-between">
+            {/* Status line */}
+            <div className="flex items-center gap-2">
+              <Wand2 className="w-4 h-4 text-[#b8a060]" />
+              {adventureModule?.parsing_status === 'completed' && (
+                <span className="text-green-400 text-xs font-['Crimson_Text',serif]">
+                  {adventureModule.location_count} locations, {adventureModule.npc_count} NPCs, {adventureModule.encounter_count} encounters
+                </span>
+              )}
+              {adventureModule?.parsing_status === 'processing' && (
+                <span className="text-blue-400 text-xs flex items-center gap-1">
+                  <Loader className="w-3 h-3 animate-spin" />
+                  Parsing... {adventureModule.parsing_progress}%
+                </span>
+              )}
+              {adventureModule?.parsing_status === 'failed' && (
+                <span className="text-red-400 text-xs" title={adventureModule.parsing_error || ''}>Parsing failed</span>
+              )}
+              {!adventureModule && (
+                <span className="text-[#6a6250] text-xs font-['Crimson_Text',serif]">Ready to parse adventure content</span>
+              )}
+            </div>
 
-          {/* Buttons */}
-          <div className="flex flex-wrap gap-1">
-            {adventureModule?.parsing_log && adventureModule.parsing_log.length > 0 && (
+            {/* Buttons */}
+            <div className="flex gap-2">
+              {adventureModule?.parsing_log && adventureModule.parsing_log.length > 0 && (
+                <button
+                  onClick={() => setShowParsingLog(!showParsingLog)}
+                  className="px-2 py-1 text-xs text-[#8a8270] hover:text-[#c8c0aa] border border-[rgba(180,160,100,0.2)] rounded"
+                >
+                  {showParsingLog ? 'Hide Log' : 'Show Log'}
+                </button>
+              )}
+              {adventureModule?.parsing_status === 'failed' && (
+                <button
+                  onClick={() => retryEmbeddingsMutation.mutate()}
+                  disabled={retryEmbeddingsMutation.isPending}
+                  className="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {retryEmbeddingsMutation.isPending ? 'Retrying...' : 'Retry'}
+                </button>
+              )}
               <button
-                onClick={() => setShowParsingLog(!showParsingLog)}
-                className="px-2 py-1 text-xs text-parchment-400 hover:text-parchment-200 border border-dungeon-600 rounded"
+                onClick={() => parseAdventureMutation.mutate()}
+                disabled={
+                  parseAdventureMutation.isPending ||
+                  retryEmbeddingsMutation.isPending ||
+                  adventureModule?.parsing_status === 'processing' ||
+                  adventureModule?.parsing_status === 'pending'
+                }
+                className={`px-3 py-1 text-xs rounded font-medium ${
+                  adventureModule?.parsing_status === 'completed'
+                    ? 'bg-[#1a1816] text-[#8a8270] hover:text-[#c8c0aa] border border-[rgba(180,160,100,0.2)]'
+                    : 'bg-[#b8a060] text-[#0f0d0a] hover:bg-[#d4b870]'
+                } disabled:opacity-50`}
               >
-                {showParsingLog ? 'Hide' : 'Log'}
+                {parseAdventureMutation.isPending || adventureModule?.parsing_status === 'processing'
+                  ? 'Parsing...'
+                  : adventureModule?.parsing_status === 'completed'
+                  ? 'Re-parse'
+                  : 'Parse Adventure'}
               </button>
-            )}
-            {adventureModule?.parsing_status === 'failed' && (
-              <button
-                onClick={() => retryEmbeddingsMutation.mutate()}
-                disabled={retryEmbeddingsMutation.isPending}
-                className="px-2 py-1 text-xs rounded bg-blue-700 text-white hover:bg-blue-600 disabled:opacity-50"
-              >
-                {retryEmbeddingsMutation.isPending ? '...' : 'Retry'}
-              </button>
-            )}
-            <button
-              onClick={() => parseAdventureMutation.mutate()}
-              disabled={
-                parseAdventureMutation.isPending ||
-                retryEmbeddingsMutation.isPending ||
-                adventureModule?.parsing_status === 'processing' ||
-                adventureModule?.parsing_status === 'pending'
-              }
-              className={`px-2 py-1 text-xs rounded ${
-                adventureModule?.parsing_status === 'completed'
-                  ? 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
-                  : 'bg-purple-700 text-white hover:bg-purple-600'
-              } disabled:opacity-50`}
-            >
-              {parseAdventureMutation.isPending || adventureModule?.parsing_status === 'processing'
-                ? '...'
-                : adventureModule?.parsing_status === 'completed'
-                ? 'Re-parse'
-                : 'Parse'}
-            </button>
+            </div>
           </div>
 
           {/* Parsing log - auto-show during processing */}
           {(showParsingLog || adventureModule?.parsing_status === 'processing') && adventureModule?.parsing_log && adventureModule.parsing_log.length > 0 && (
-            <div className="mt-3 bg-dungeon-900 border border-dungeon-700 rounded p-3 max-h-64 overflow-y-auto">
+            <div className="mt-3 bg-[#0a0908] border border-[rgba(180,160,100,0.1)] rounded p-3 max-h-64 overflow-y-auto">
               <div className="font-mono text-xs space-y-1">
                 {adventureModule.parsing_log.map((line, index) => (
                   <div
                     key={index}
                     className={`${
                       line.startsWith('ERROR') ? 'text-red-400' :
-                      line.startsWith('Stage') ? 'text-purple-400' :
-                      line.startsWith('  →') ? 'text-parchment-400' :
+                      line.startsWith('Stage') ? 'text-[#b8a060]' :
+                      line.startsWith('  →') ? 'text-[#8a8270]' :
                       line.includes('complete') ? 'text-green-400' :
-                      'text-parchment-500'
+                      'text-[#6a6250]'
                     }`}
                   >
                     {line}
@@ -479,19 +499,23 @@ function DocumentCard({ document, systems }: { document: PDFDocument; systems: R
         </div>
       )}
 
+      {document.processing_error && (
+        <div className="px-4 py-2 text-red-400 text-sm bg-[#1a0a0a]">{document.processing_error}</div>
+      )}
+
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-dungeon-800 border border-dungeon-600 rounded-lg p-6 max-w-md mx-4 shadow-xl">
-            <h3 className="text-parchment-100 font-display text-lg mb-2">Delete Sourcebook?</h3>
-            <p className="text-parchment-300 text-sm mb-4">
-              Are you sure you want to delete <span className="text-parchment-100 font-semibold">{document.title || document.original_filename}</span>?
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#1a1816] border border-[rgba(180,160,100,0.2)] rounded-lg p-6 max-w-md mx-4 shadow-xl">
+            <h3 className="text-[#d4b870] font-['Cinzel',serif] text-xl mb-3">Delete Sourcebook?</h3>
+            <p className="text-[#c8c0aa] text-sm mb-5 font-['Crimson_Text',serif]">
+              Are you sure you want to delete <span className="text-[#d4b870] font-semibold">{document.title || document.original_filename}</span>?
               This will remove all indexed content and cannot be undone.
             </p>
-            <div className="flex gap-2 justify-end">
+            <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setShowDeleteConfirm(false)}
-                className="px-4 py-2 text-sm text-parchment-300 hover:text-parchment-100 transition-colors"
+                className="px-4 py-2 text-sm text-[#8a8270] hover:text-[#c8c0aa] transition-colors"
               >
                 Cancel
               </button>

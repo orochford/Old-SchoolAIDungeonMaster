@@ -1,49 +1,15 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { ArrowLeft, Send, Loader, Scroll, Save } from 'lucide-react'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { ArrowLeft, Loader, Scroll } from 'lucide-react'
 import { api } from '@/services/api'
-import { CharacterSidebar } from '@/components/game/CharacterSidebar'
-import { EquippedItem } from '@/game-systems/bx-dnd/utils/calculations'
-import { DiceRoller } from '@/components/game/DiceRoller'
-import { GameLog } from '@/components/game/GameLog'
-import { StatusPanel } from '@/components/game/StatusPanel'
-import { ActionSuggestions } from '@/components/game/ActionSuggestions'
-import { JournalPanel } from '@/components/game/JournalPanel'
 import { SessionRecap } from '@/components/game/SessionRecap'
 import { CampaignFraming } from '@/components/game/CampaignFraming'
-import { CalendarPanel } from '@/components/game/CalendarPanel'
-import { MapPanel } from '@/components/game/MapPanel'
-import { SpellPanel } from '@/components/game/SpellPanel'
 import { SpellbookModal } from '@/components/game/SpellbookModal'
 import { EndSessionModal } from '@/components/game/EndSessionModal'
+import { IllustrationPanel } from '@/components/game/IllustrationPanel'
+import { OSRPlayInterface, CharacterData, MessageData } from '@/components/game/OSRPlayInterface'
 
-// Simple markdown renderer for dice roll messages
-function renderMarkdown(content: string): React.ReactNode {
-  const parts: React.ReactNode[] = []
-  let remaining = content
-  let key = 0
-
-  while (remaining.length > 0) {
-    const boldMatch = remaining.match(/\*\*(.+?)\*\*/)
-    if (boldMatch && boldMatch.index !== undefined) {
-      if (boldMatch.index > 0) {
-        parts.push(remaining.slice(0, boldMatch.index))
-      }
-      parts.push(
-        <strong key={key++} className="text-parchment-100 font-semibold">
-          {boldMatch[1]}
-        </strong>
-      )
-      remaining = remaining.slice(boldMatch.index + boldMatch[0].length)
-    } else {
-      parts.push(remaining)
-      break
-    }
-  }
-
-  return parts.length > 0 ? parts : content
-}
 
 interface Character {
   id: string
@@ -60,7 +26,16 @@ interface Character {
     armor_class?: number
     alignment?: string
     gold?: number
-    equipment?: string[]
+    equipment?: Array<string | { name: string; quantity?: number }>
+    race?: string
+    armor?: string
+    equipped_items?: { id: string; name: string; equipped?: boolean }[]
+    weapons?: Array<{ name: string; damage?: string; range?: string; type?: string }>
+    spells?: {
+      slotsPerLevel?: Record<string, { total: number; used: number }>
+      prepared?: { name: string; level: number; prepared?: boolean; cast?: boolean; description?: string }[]
+      known?: { name: string; level: number; description?: string }[]
+    }
   }
 }
 
@@ -130,6 +105,13 @@ interface MapData {
   exploration_progress?: string
 }
 
+interface IllustrationData {
+  image_url: string
+  title: string
+  description: string
+  mood: string
+}
+
 interface TimeData {
   day: number
   month: number
@@ -148,7 +130,6 @@ export function PlayPage() {
   const { characterId, campaignId: urlCampaignId } = useParams()
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -161,9 +142,11 @@ export function PlayPage() {
   const [showFraming, setShowFraming] = useState(false)
   const [mapData, setMapData] = useState<MapData | null>(null)
   const [timeData, setTimeData] = useState<TimeData | null>(null)
+  const [gameLog, setGameLog] = useState<{ type: string; text: string }[]>([])
   const [showSpellbook, setShowSpellbook] = useState(false)
   const [showEndSession, setShowEndSession] = useState(false)
   const [isEndingSession, setIsEndingSession] = useState(false)
+  const [illustrationData, setIllustrationData] = useState<IllustrationData | null>(null)
   const [sessionSummary, setSessionSummary] = useState<{
     title: string
     summary: string
@@ -191,25 +174,7 @@ export function PlayPage() {
     queryFn: () => api.get<Campaign[]>('/campaigns'),
   })
 
-  const queryClient = useQueryClient()
 
-  // Mutation for updating character (e.g., equipment toggling)
-  const updateCharacterMutation = useMutation({
-    mutationFn: (attributes: Record<string, unknown>) =>
-      api.patch(`/characters/${characterId}`, { attributes }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['character', characterId] })
-    },
-  })
-
-  // Handler for weapon selection changes - saves to database
-  const handleWeaponSelectionChange = useCallback((primary: string | null, secondary: string | null) => {
-    const currentAttrs = character?.attributes || {}
-    updateCharacterMutation.mutate({
-      ...currentAttrs,
-      equipped_weapons: { primary, secondary },
-    })
-  }, [character?.attributes, updateCharacterMutation])
 
   // Filter campaigns that use this character
   const characterCampaigns = campaigns?.filter(
@@ -260,14 +225,28 @@ export function PlayPage() {
         case 'connected':
           setIsConnected(true)
           setIsLoading(false)
-          // Restore game state if reconnecting
-          if (data.game_state) {
-            const gs = data.game_state as Record<string, unknown>
+          // Restore game state from both game_state and adventure_state
+          {
+            const gs = data.game_state as Record<string, unknown> | undefined
+            const advState = data.adventure_state as Record<string, unknown> | undefined
+            const currentLocation = (advState?.current_location as string) || (gs?.location as string) || undefined
             setGameState({
-              location: gs.location as string | undefined,
-              conditions: gs.conditions as string[] | undefined,
-              inCombat: gs.in_combat as boolean | undefined,
+              location: currentLocation,
+              conditions: gs?.conditions as string[] | undefined,
+              inCombat: (advState?.in_combat as boolean) || (gs?.in_combat as boolean) || undefined,
             })
+            // Add session start to game log
+            const adventureTitle = data.adventure_title as string | undefined
+            if (adventureTitle) {
+              setGameLog((prev) => [...prev, { type: 'event', text: `Adventure: ${adventureTitle}` }])
+            }
+            if (currentLocation) {
+              setGameLog((prev) => [...prev, { type: 'location', text: `Current location: ${currentLocation}` }])
+            }
+            // Add combat status to game log if in combat
+            if (advState?.in_combat || gs?.in_combat) {
+              setGameLog((prev) => [...prev, { type: 'combat', text: 'Combat in progress' }])
+            }
           }
           break
 
@@ -336,10 +315,36 @@ export function PlayPage() {
 
           // Handle update_adventure_location
           if (data.tool_name === 'update_adventure_location' && data.result?.location) {
+            const newLocation = data.result.location as string
             setGameState((prev) => ({
               ...prev,
-              location: data.result.location as string,
+              location: newLocation,
             }))
+            // Add to game log
+            setGameLog((prev) => [...prev, { type: 'location', text: `Entered ${newLocation}` }])
+            // Update map if map_update data is included
+            if (data.result.map_update) {
+              const mapUpdate = data.result.map_update as {
+                map_id: string
+                map_name: string
+                rendered_map: string
+                width: number
+                height: number
+                player_position: { x: number; y: number } | null
+                markers: MapData['markers']
+                exploration_progress: string
+              }
+              setMapData({
+                map_id: mapUpdate.map_id,
+                map_name: mapUpdate.map_name,
+                rendered_map: mapUpdate.rendered_map,
+                width: mapUpdate.width,
+                height: mapUpdate.height,
+                player_position: mapUpdate.player_position,
+                markers: mapUpdate.markers,
+                exploration_progress: mapUpdate.exploration_progress,
+              })
+            }
           }
 
           // Handle map display
@@ -395,6 +400,37 @@ export function PlayPage() {
               season: data.result.season as string,
               weather: data.result.weather as string,
             })
+          }
+
+          // Handle show_illustration - display atmospheric image
+          if (data.tool_name === 'show_illustration' && data.result?.shown && data.result?.image_url) {
+            setIllustrationData({
+              image_url: data.result.image_url as string,
+              title: data.result.title as string || '',
+              description: data.result.description as string || '',
+              mood: data.result.mood as string || 'dramatic',
+            })
+          }
+
+          // Add to game log based on tool type
+          if (data.tool_name === 'add_item' && data.result?.item_name) {
+            setGameLog((prev) => [...prev, { type: 'loot', text: `Acquired: ${data.result.item_name}` }])
+          }
+          if (data.tool_name === 'start_encounter') {
+            setGameLog((prev) => [...prev, { type: 'combat', text: `Combat started!` }])
+          }
+          if (data.tool_name === 'end_encounter') {
+            setGameLog((prev) => [...prev, { type: 'combat', text: `Combat ended` }])
+          }
+          if (data.tool_name === 'apply_damage_or_healing' && data.result?.target) {
+            const change = (data.result.old_hp as number) - (data.result.new_hp as number)
+            const text = change > 0
+              ? `${data.result.target} took ${change} damage`
+              : `${data.result.target} healed ${Math.abs(change)} HP`
+            setGameLog((prev) => [...prev, { type: 'combat', text }])
+          }
+          if (data.tool_name === 'advance_time' && data.result?.reason) {
+            setGameLog((prev) => [...prev, { type: 'event', text: data.result.reason as string }])
           }
 
           // Show tool results as system messages
@@ -464,7 +500,7 @@ export function PlayPage() {
   // Cleanup WebSocket on unmount
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close()
       }
     }
@@ -478,28 +514,6 @@ export function PlayPage() {
     scrollToBottom()
   }, [messages, streamingContent])
 
-  const handleSend = () => {
-    if (!input.trim() || isLoading || !wsRef.current) return
-
-    const userMessage: Message = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: input,
-      created_at: new Date().toISOString(),
-    }
-
-    setMessages((prev) => [...prev, userMessage])
-
-    // Send to WebSocket
-    wsRef.current.send(
-      JSON.stringify({
-        type: 'player_action',
-        content: input,
-      })
-    )
-
-    setInput('')
-  }
 
   const handleEndSession = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -516,7 +530,9 @@ export function PlayPage() {
   const handleCloseEndSession = () => {
     setShowEndSession(false)
     setSessionSummary(null)
-    wsRef.current?.close()
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.close()
+    }
     navigate(`/characters/${characterId}`)
   }
 
@@ -642,9 +658,207 @@ export function PlayPage() {
       case 'add_map_marker':
         return `📌 Marker added: ${(result.marker as Record<string, unknown>)?.label}`
 
+      case 'show_illustration':
+        if (result.shown) {
+          return `🖼️ Displaying: ${result.title || result.description}`
+        }
+        return `🖼️ No matching illustration found`
+
       default:
         return `[${toolName}]: ${JSON.stringify(result)}`
     }
+  }
+
+  // Adapter: Convert API character format to OSRPlayInterface format
+  const adaptCharacterData = (char: Character | undefined): CharacterData | null => {
+    if (!char) return null
+
+    const attrs = char.attributes || {}
+    const abilityScores = attrs.ability_scores as Record<string, number> | undefined || {}
+    const savingThrows = attrs.saving_throws as Record<string, number> | undefined || {}
+
+    // Calculate ability modifiers
+    const getModifier = (score: number) => {
+      if (score >= 18) return '+3'
+      if (score >= 16) return '+2'
+      if (score >= 13) return '+1'
+      if (score >= 9) return '0'
+      if (score >= 6) return '-1'
+      if (score >= 4) return '-2'
+      return '-3'
+    }
+
+    // Convert ability scores to the expected format
+    const abilities: Record<string, { score: number; mod: string }> = {}
+    for (const [key, value] of Object.entries(abilityScores)) {
+      const abilityName = key.substring(0, 3).toUpperCase()
+      abilities[abilityName] = { score: value, mod: getModifier(value) }
+    }
+
+    // Get weapons from multiple sources
+    const weaponKeywords = ['sword', 'axe', 'dagger', 'mace', 'bow', 'spear', 'staff', 'hammer', 'club', 'flail', 'crossbow', 'sling', 'javelin', 'pike', 'halberd', 'morning star', 'warhammer']
+    const isWeapon = (name: string) => weaponKeywords.some(k => name.toLowerCase().includes(k))
+
+    let weapons: { name: string; damage: string; melee: boolean }[] = []
+
+    // Source 1: Dedicated weapons field
+    if (attrs.weapons && attrs.weapons.length > 0) {
+      weapons = attrs.weapons.map((w) => ({
+        name: w.name,
+        damage: w.damage || '1d6',
+        melee: !w.name.toLowerCase().includes('bow') && !w.name.toLowerCase().includes('crossbow') && !w.name.toLowerCase().includes('sling'),
+      }))
+    }
+
+    // Source 2: equipped_items
+    if (weapons.length === 0 && attrs.equipped_items) {
+      const weaponItems = attrs.equipped_items.filter((item) => item.name && isWeapon(item.name))
+      if (weaponItems.length > 0) {
+        weapons = weaponItems.map((w) => ({
+          name: w.name,
+          damage: '1d6',
+          melee: !w.name.toLowerCase().includes('bow') && !w.name.toLowerCase().includes('crossbow'),
+        }))
+      }
+    }
+
+    // Source 3: equipment array
+    if (weapons.length === 0 && attrs.equipment) {
+      const equipmentWeapons = attrs.equipment
+        .map((item) => typeof item === 'string' ? item : item.name)
+        .filter((name) => name && isWeapon(name))
+      if (equipmentWeapons.length > 0) {
+        weapons = equipmentWeapons.map((name) => ({
+          name: name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+          damage: '1d6',
+          melee: !name.toLowerCase().includes('bow') && !name.toLowerCase().includes('crossbow'),
+        }))
+      }
+    }
+
+    // Fallback to Unarmed
+    if (weapons.length === 0) {
+      weapons = [{ name: 'Unarmed', damage: '1d2', melee: true }]
+    }
+
+    // Get XP needed for next level (B/X D&D progression approximation)
+    const xpByLevel: Record<number, number> = {
+      1: 0, 2: 2000, 3: 4000, 4: 8000, 5: 16000, 6: 32000, 7: 64000, 8: 120000, 9: 240000, 10: 360000,
+    }
+    const nextLevelXP = xpByLevel[(char.level || 1) + 1] || (char.experience_points + 50000)
+
+    // Get spells if character is a spellcaster
+    const spellsData = attrs.spells as {
+      slotsPerLevel?: Record<string, { total: number; used: number }>
+      prepared?: { name: string; level: number; prepared?: boolean; cast?: boolean; description?: string }[]
+      known?: { name: string; level: number; description?: string }[]
+    } | undefined
+
+    // Get armor from multiple sources (shields are separate)
+    const armorKeywords = ['leather', 'chain', 'plate', 'mail', 'scale', 'banded', 'splint', 'padded', 'studded', 'ring', 'brigandine', 'armor', 'armour']
+    const isArmor = (name: string) => {
+      const lower = name.toLowerCase()
+      // Exclude shield-only items
+      if (lower === 'shield' || lower.match(/^(small|large|tower|wooden|iron|steel)\s+shield$/)) return false
+      return armorKeywords.some(k => lower.includes(k))
+    }
+    const isShield = (name: string) => name.toLowerCase().includes('shield')
+
+    let armor = (attrs.armor as string) || ''
+    let shield = ''
+
+    // If no armor field, check equipped_items
+    if (!armor && attrs.equipped_items) {
+      const armorItem = attrs.equipped_items.find((item) => item.name && isArmor(item.name))
+      if (armorItem) armor = armorItem.name
+      const shieldItem = attrs.equipped_items.find((item) => item.name && isShield(item.name))
+      if (shieldItem) shield = shieldItem.name
+    }
+
+    // If still no armor, check equipment array
+    if (!armor && attrs.equipment) {
+      const equipNames = attrs.equipment.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean)
+      const armorInEquip = equipNames.find((name) => isArmor(name!))
+      if (armorInEquip) {
+        armor = armorInEquip.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      }
+      if (!shield) {
+        const shieldInEquip = equipNames.find((name) => isShield(name!))
+        if (shieldInEquip) {
+          shield = shieldInEquip.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        }
+      }
+    }
+
+    // Combine armor and shield for display
+    const armorDisplay = armor && shield ? `${armor} + ${shield}` : armor || (shield ? `${shield} only` : '')
+
+    return {
+      name: char.name,
+      class: (attrs.character_class as string) || 'Adventurer',
+      level: char.level || 1,
+      alignment: (attrs.alignment as string) || 'Neutral',
+      race: (attrs.race as string) || 'Human',
+      hp: { current: char.current_hp || 0, max: char.max_hp || 0 },
+      ac: (attrs.armor_class as number) || 9,
+      thac0: (attrs.thac0 as number) || (20 - (char.level || 1)),
+      xp: { current: char.experience_points || 0, next: nextLevelXP },
+      movement: 120,
+      abilities,
+      saves: savingThrows,
+      weapons,
+      armor: armorDisplay || 'None',
+      gold: (attrs.gold as number) || 0,
+      equipment: ((attrs.equipment || []) as Array<string | { name: string; quantity?: number }>).map(
+        (item) => {
+          if (typeof item === 'object' && item.name) {
+            // Object format: {name: "Torch", quantity: 20}
+            const name = item.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+            return item.quantity && item.quantity > 1 ? `${name} (x${item.quantity})` : name
+          }
+          // String format: might be "torch_20" or "Torch (x20)" or just "Rope"
+          const str = String(item)
+          // Parse underscore format like "torch_20" -> "Torch (x20)"
+          const underscoreMatch = str.match(/^([a-z_]+)_(\d+)$/i)
+          if (underscoreMatch) {
+            const name = underscoreMatch[1].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+            const qty = parseInt(underscoreMatch[2])
+            return qty > 1 ? `${name} (x${qty})` : name
+          }
+          // Already formatted or simple name - just title case it
+          return str.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        }
+      ),
+      spells: spellsData ? {
+        slotsPerLevel: spellsData.slotsPerLevel || {},
+        prepared: (spellsData.prepared || []).map((s) => ({
+          name: s.name,
+          level: s.level,
+          prepared: s.prepared ?? true,
+          cast: s.cast ?? false,
+          description: s.description || '',
+        })),
+        known: (spellsData.known || []).map((s) => ({
+          name: s.name,
+          level: s.level,
+          description: s.description || '',
+        })),
+      } : undefined,
+    }
+  }
+
+  // Adapter: Convert messages to OSRPlayInterface format
+  const adaptMessages = (msgs: Message[]): MessageData[] => {
+    return msgs.filter((m) => m.role !== 'tool').map((msg) => ({
+      id: msg.id,
+      type: msg.role === 'user' ? 'player' as const :
+            msg.role === 'assistant' ? 'dm' as const :
+            msg.role === 'dice' ? 'roll' as const :
+            'system' as const,
+      text: msg.content,
+      content: msg.content,
+      timestamp: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }))
   }
 
   // Campaign selection screen
@@ -713,377 +927,83 @@ export function PlayPage() {
     )
   }
 
-  // Separate tool messages from chat messages (include dice rolls in chat)
-  const chatMessages = messages.filter((m) => m.role !== 'tool')
-  const toolMessages = messages.filter((m) => m.role === 'tool')
+  // Game session screen - New OSR-style interface
+  const adaptedCharacter = adaptCharacterData(character)
+  const adaptedMessages = adaptMessages(messages)
 
-  // Game session screen - Three column layout
+  // Handle sending a message through WebSocket
+  const handleOSRSendMessage = (text: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.warn('WebSocket not connected, cannot send message')
+      return
+    }
+
+    const userMessage: Message = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: text,
+      created_at: new Date().toISOString(),
+    }
+
+    setMessages((prev) => [...prev, userMessage])
+
+    // Send to WebSocket
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'player_action',
+        content: text,
+      })
+    )
+  }
+
+  // Handle leaving the session
+  const handleLeave = () => {
+    if (confirm('Leave without saving? Your session will continue where you left off.')) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+      navigate(`/characters/${characterId}`)
+    }
+  }
+
+  if (!adaptedCharacter) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-dungeon-900">
+        <Loader className="w-12 h-12 text-parchment-500 animate-spin" />
+      </div>
+    )
+  }
+
+  // Show loading screen while connecting to session
+  if (!isConnected) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-dungeon-900">
+        <Loader className="w-16 h-16 text-parchment-500 animate-spin mb-6" />
+        <h2 className="text-parchment-200 text-xl font-serif mb-2">Preparing Your Adventure</h2>
+        <p className="text-parchment-400 text-sm">
+          {startSessionMutation.isPending ? 'Creating session...' : 'Connecting to the realm...'}
+        </p>
+      </div>
+    )
+  }
+
   return (
-    <div className="h-[calc(100vh-8rem)] grid grid-cols-[280px_1fr_300px] gap-4">
-      {/* Left Column - Character Info */}
-      <div className="flex flex-col gap-4 overflow-y-auto">
-        {/* Session Controls */}
-        <div className="flex items-center justify-between gap-2">
-          <button
-            onClick={() => {
-              if (confirm('Leave without saving? Your session will continue where you left off.')) {
-                wsRef.current?.close()
-                navigate(`/characters/${characterId}`)
-              }
-            }}
-            className="flex items-center gap-2 text-parchment-400 hover:text-parchment-200 text-sm"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Leave</span>
-          </button>
-          <button
-            onClick={() => setShowEndSession(true)}
-            disabled={!isConnected || isLoading}
-            className="flex items-center gap-2 text-gold-400 hover:text-gold-300 text-sm disabled:text-parchment-600"
-          >
-            <Save className="w-4 h-4" />
-            <span>End Session</span>
-          </button>
-        </div>
-
-        <CharacterSidebar
-          character={character}
-          onWeaponSelectionChange={handleWeaponSelectionChange}
-          onAttackRoll={(result) => {
-            // Format attack roll message
-            const attackTotal = result.attackRoll + result.strMod
-            const damageTotal = result.damageRoll.total + result.strMod
-            const isNat20 = result.attackRoll === 20
-            const isNat1 = result.attackRoll === 1
-
-            const attackContent = `⚔️ **${result.weapon} Attack**\n` +
-              `Attack: d20 = ${result.attackRoll}${result.strMod !== 0 ? ` ${result.strMod > 0 ? '+' : ''}${result.strMod} STR` : ''} = **${attackTotal}**` +
-              `${isNat20 ? ' (Natural 20!)' : ''}${isNat1 ? ' (Natural 1!)' : ''}\n` +
-              `Damage: ${result.damageRoll.rolls.join('+')}${result.strMod !== 0 ? ` ${result.strMod > 0 ? '+' : ''}${result.strMod}` : ''} = **${damageTotal}**\n` +
-              `(THAC0 ${result.thac0} - needs ${result.thac0 - attackTotal} or worse AC to hit)`
-
-            // Add to chat
-            const attackMsg: Message = {
-              id: `attack-${Date.now()}`,
-              role: 'dice',
-              content: attackContent,
-              created_at: new Date().toISOString(),
-            }
-            setMessages((prev) => [...prev, attackMsg])
-
-            // Send dice roll to DM via WebSocket
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              // First send the dice roll data
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'dice_roll',
-                  notation: `d20+${result.strMod} (${result.weapon} attack)`,
-                  rolls: [result.attackRoll],
-                  modifier: result.strMod,
-                  total: attackTotal,
-                  extra: {
-                    damage: damageTotal,
-                    damageRolls: result.damageRoll.rolls,
-                    weapon: result.weapon,
-                    thac0: result.thac0,
-                  },
-                })
-              )
-              // Then send a player action so the DM responds using the roll
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'player_action',
-                  content: `I attack with my ${result.weapon}! (I rolled ${attackTotal} to hit, ${damageTotal} damage)`,
-                })
-              )
-            }
-          }}
-          onDropItem={(itemId, itemName) => {
-            // Add drop message to chat
-            const dropMsg: Message = {
-              id: `drop-${Date.now()}`,
-              role: 'user',
-              content: `*drops ${itemName}*`,
-              created_at: new Date().toISOString(),
-            }
-            setMessages((prev) => [...prev, dropMsg])
-
-            // Send drop action to DM
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'player_action',
-                  content: `I drop my ${itemName}.`,
-                })
-              )
-            }
-          }}
-          onToggleEquipped={(itemId, equipped, updatedItems) => {
-            // Update character attributes with new equipped_items
-            const currentAttrs = character?.attributes || {}
-            updateCharacterMutation.mutate({
-              ...currentAttrs,
-              equipped_items: updatedItems,
-            })
-
-            // Find the item name for the message
-            const item = updatedItems.find((i) => i.id === itemId)
-            if (item) {
-              const action = equipped ? 'equips' : 'removes'
-              const toggleMsg: Message = {
-                id: `equip-${Date.now()}`,
-                role: 'user',
-                content: `*${action} ${item.name}*`,
-                created_at: new Date().toISOString(),
-              }
-              setMessages((prev) => [...prev, toggleMsg])
-            }
-          }}
-          onAbilityCheck={(result) => {
-            // Format ability/save check message
-            let content: string
-            if (result.type === 'ability') {
-              const modText = result.modifier ? ` (${result.modifier >= 0 ? '+' : ''}${result.modifier})` : ''
-              content = `🎲 **${result.name.charAt(0).toUpperCase() + result.name.slice(1)} Check**\n` +
-                `d20 = **${result.roll}**${modText}`
-            } else {
-              // Saving throw
-              const successText = result.success ? '✅ Success!' : '❌ Failed!'
-              content = `🎲 **${result.name} Save**\n` +
-                `d20 = **${result.roll}** vs target ${result.target}+ → ${successText}`
-            }
-
-            // Add to chat
-            const checkMsg: Message = {
-              id: `check-${Date.now()}`,
-              role: 'dice',
-              content,
-              created_at: new Date().toISOString(),
-            }
-            setMessages((prev) => [...prev, checkMsg])
-
-            // Send dice roll to DM via WebSocket
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'dice_roll',
-                  notation: result.type === 'ability' ? `d20 (${result.name} check)` : `d20 (${result.name} save)`,
-                  rolls: [result.roll],
-                  modifier: result.modifier || 0,
-                  total: result.roll,
-                })
-              )
-            }
-          }}
-        />
-
-        {/* Spell Panel - only shows for spellcasting classes */}
-        {characterId && (
-          <SpellPanel
-            characterId={characterId}
-            onCastSpell={(spell) => {
-              // Add cast message to chat
-              const castMsg: Message = {
-                id: `cast-${Date.now()}`,
-                role: 'user',
-                content: `*casts ${spell.name}*`,
-                created_at: new Date().toISOString(),
-              }
-              setMessages((prev) => [...prev, castMsg])
-
-              // Send cast action to DM
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: 'player_action',
-                    content: `I cast ${spell.name}! (${spell.range}, ${spell.duration})`,
-                  })
-                )
-              }
-            }}
-            onOpenSpellbook={() => setShowSpellbook(true)}
-          />
-        )}
-      </div>
-
-      {/* Middle Column - Chat */}
-      <div className="flex flex-col min-h-0">
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto card mb-4">
-          <div className="space-y-4">
-            {/* Initial loading placeholder - shown when no messages and waiting for DM */}
-            {chatMessages.length === 0 && !streamingContent && (
-              <div className="flex flex-col items-center justify-center h-full py-16">
-                <div className="relative mb-6">
-                  <Loader className="w-12 h-12 text-parchment-500 animate-spin" />
-                  <div className="absolute inset-0 w-12 h-12 border-2 border-parchment-700 rounded-full animate-pulse" />
-                </div>
-                <h3 className="font-display text-xl text-parchment-200 mb-2">
-                  Travelling to a far away land...
-                </h3>
-                <p className="text-parchment-500 text-sm text-center max-w-xs">
-                  {isConnected
-                    ? 'The Dungeon Master is preparing your adventure'
-                    : 'Connecting to the realm...'}
-                </p>
-                <div className="mt-4 flex gap-1">
-                  <span className="w-2 h-2 bg-parchment-600 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-parchment-600 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-parchment-600 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            )}
-
-            {chatMessages.map((message) => (
-              <div
-                key={message.id}
-                className={`${
-                  message.role === 'user'
-                    ? 'ml-12 bg-dungeon-600 rounded-lg p-4'
-                    : message.role === 'system'
-                    ? 'mx-8 bg-red-900/30 rounded-lg p-3 text-sm border border-red-800'
-                    : message.role === 'dice'
-                    ? 'mx-8 bg-amber-900/30 rounded-lg p-3 text-sm border border-amber-700'
-                    : 'mr-12 bg-dungeon-700 rounded-lg p-4 border-l-4 border-parchment-600'
-                }`}
-              >
-                <div className="text-parchment-500 text-xs mb-1">
-                  {message.role === 'user' && 'You'}
-                  {message.role === 'assistant' && 'Dungeon Master'}
-                  {message.role === 'system' && 'System'}
-                  {message.role === 'dice' && 'Dice Roll'}
-                </div>
-                <div className="text-parchment-200 whitespace-pre-wrap">
-                  {message.role === 'dice' ? renderMarkdown(message.content) : message.content}
-                </div>
-              </div>
-            ))}
-
-            {/* Streaming content */}
-            {streamingContent && (
-              <div className="mr-12 bg-dungeon-700 rounded-lg p-4 border-l-4 border-parchment-600">
-                <div className="text-parchment-500 text-xs mb-1">Dungeon Master</div>
-                <div className="text-parchment-200 whitespace-pre-wrap">{streamingContent}</div>
-              </div>
-            )}
-
-            {/* Loading indicator for subsequent messages */}
-            {isLoading && !streamingContent && chatMessages.length > 0 && (
-              <div className="mr-12 bg-dungeon-700 rounded-lg p-4 border-l-4 border-parchment-600">
-                <div className="text-parchment-500 text-xs mb-1">Dungeon Master</div>
-                <Loader className="w-5 h-5 text-parchment-400 animate-spin" />
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        {/* Action Suggestions & Input */}
-        <div className="space-y-2">
-          <ActionSuggestions
-            onAction={(action) => setInput(action)}
-            gameState={gameState}
-            disabled={isLoading || !isConnected}
-          />
-          {/* Dice Roller above chat input */}
-          <DiceRoller
-            compact
-            onRoll={(result) => {
-              const rollContent = `🎲 Rolled ${result.notation}: [${result.rolls.join(', ')}]${
-                result.modifier !== 0 ? (result.modifier > 0 ? ` + ${result.modifier}` : ` - ${Math.abs(result.modifier)}`) : ''
-              } = **${result.total}**${
-                result.notation.includes('d20') && result.rolls[0] === 20 ? ' (Natural 20!)' : ''
-              }${result.notation.includes('d20') && result.rolls[0] === 1 ? ' (Natural 1!)' : ''}`
-
-              // Add dice roll result to chat (using 'dice' role to show in main chat)
-              const rollMsg: Message = {
-                id: `roll-${Date.now()}`,
-                role: 'dice',
-                content: rollContent,
-                created_at: new Date().toISOString(),
-              }
-              setMessages((prev) => [...prev, rollMsg])
-
-              // Send dice roll to DM via WebSocket so they can reference it
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                // First send the dice roll data
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: 'dice_roll',
-                    notation: result.notation,
-                    rolls: result.rolls,
-                    modifier: result.modifier,
-                    total: result.total,
-                  })
-                )
-                // Then send a player action so the DM responds to the roll
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: 'player_action',
-                    content: `I rolled ${result.notation} and got ${result.total}.`,
-                  })
-                )
-              }
-            }}
-          />
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="What do you do?"
-              className="input flex-1"
-              disabled={isLoading || !isConnected}
-            />
-            <button onClick={handleSend} disabled={!input.trim() || isLoading || !isConnected} className="btn btn-primary">
-              <Send className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Right Column - Game Log, Journal & Status */}
-      <div className="flex flex-col gap-4 overflow-y-auto">
-        <StatusPanel
-          location={gameState.location}
-          conditions={gameState.conditions}
-          isConnected={isConnected}
-          sessionId={sessionId}
-        />
-        {timeData && <CalendarPanel timeData={timeData} />}
-        <MapPanel
-          mapData={mapData}
-          onClose={() => setMapData(null)}
-          onNavigateTo={(location) => {
-            // Send navigation message to DM via WebSocket
-            const navMsg: Message = {
-              id: `nav-${Date.now()}`,
-              role: 'user',
-              content: `*heads towards ${location}*`,
-              created_at: new Date().toISOString(),
-            }
-            setMessages((prev) => [...prev, navMsg])
-
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'player_action',
-                  content: `I want to go to ${location}.`,
-                })
-              )
-            }
-          }}
-        />
-        <GameLog messages={toolMessages} />
-        {selectedCampaign && characterId && sessionId && (
-          <JournalPanel
-            campaignId={selectedCampaign}
-            characterId={characterId}
-            sessionId={sessionId}
-          />
-        )}
-      </div>
+    <>
+      <OSRPlayInterface
+        character={adaptedCharacter}
+        messages={adaptedMessages}
+        streamingContent={streamingContent}
+        isConnected={isConnected}
+        isLoading={isLoading}
+        currentLocation={gameState.location || 'Unknown'}
+        timeData={timeData}
+        mapData={mapData}
+        gameLog={gameLog}
+        onSendMessage={handleOSRSendMessage}
+        onLeave={handleLeave}
+        adventureTitle={framingData?.adventure_title || ''}
+        campaignName={campaigns?.find((c) => c.id === selectedCampaign)?.name || ''}
+      />
 
       {/* Session Recap Modal */}
       {showRecap && recapData && (
@@ -1119,6 +1039,14 @@ export function PlayPage() {
           onClose={handleCloseEndSession}
         />
       )}
-    </div>
+
+      {/* Illustration Display */}
+      {illustrationData && (
+        <IllustrationPanel
+          illustration={illustrationData}
+          onDismiss={() => setIllustrationData(null)}
+        />
+      )}
+    </>
   )
 }

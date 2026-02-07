@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
   BookOpen,
-  Trophy,
   MapPin,
   Sword,
   ScrollText,
@@ -14,6 +13,8 @@ import {
   Skull,
   Package,
   AlertTriangle,
+  Pencil,
+  Trash2,
 } from 'lucide-react'
 import { api } from '@/services/api'
 
@@ -31,26 +32,6 @@ interface JournalEntry {
   entry_metadata: Record<string, unknown>
   created_at: string
   updated_at: string
-}
-
-interface Achievement {
-  id: string
-  code: string
-  name: string
-  description: string
-  icon: string | null
-  rarity: string
-  criteria: Record<string, unknown>
-}
-
-interface CharacterAchievement {
-  id: string
-  character_id: string
-  achievement_id: string
-  session_id: string | null
-  context: string | null
-  created_at: string
-  achievement: Achievement
 }
 
 interface WorldLocation {
@@ -114,11 +95,10 @@ interface Character {
   campaign_id: string | null
 }
 
-type TabType = 'entries' | 'achievements' | 'locations' | 'equipment' | 'consequences'
+type TabType = 'entries' | 'locations' | 'equipment' | 'consequences'
 
 const tabs: { id: TabType; label: string; icon: typeof BookOpen }[] = [
   { id: 'entries', label: 'Adventure Log', icon: ScrollText },
-  { id: 'achievements', label: 'Achievements', icon: Trophy },
   { id: 'locations', label: 'Locations', icon: MapPin },
   { id: 'equipment', label: 'Equipment', icon: Sword },
   { id: 'consequences', label: 'World Events', icon: AlertTriangle },
@@ -132,14 +112,6 @@ const entryTypeIcons: Record<string, typeof BookOpen> = {
   npc: Skull,
   combat: Sword,
   loot: Package,
-  achievement: Trophy,
-}
-
-const rarityColors: Record<string, string> = {
-  common: 'text-parchment-300',
-  uncommon: 'text-green-400',
-  rare: 'text-blue-400',
-  legendary: 'text-purple-400',
 }
 
 export function JournalPage() {
@@ -170,28 +142,34 @@ export function JournalPage() {
     : characters
 
   return (
-    <div className="relative lg:pl-[20%]">
-      {/* Decorative side image with fade */}
+    <div className="min-h-[calc(100vh-8rem)] flex">
+      {/* Left atmosphere panel - fixed height */}
       <div
-        className="fixed left-0 top-0 w-1/3 h-full pointer-events-none z-0 hidden lg:block"
+        className="hidden lg:block w-[30%] fixed left-0 top-16 bottom-0"
         style={{
           backgroundImage: 'url(/img/jounal.png)',
           backgroundSize: 'cover',
-          backgroundPosition: 'center right',
-          maskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
-          WebkitMaskImage: 'linear-gradient(to right, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)',
+          backgroundPosition: 'top center',
         }}
-      />
-
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="font-display text-4xl text-parchment-100">Journal</h1>
+      >
+        <div className="absolute inset-0 bg-gradient-to-r from-dungeon-900/60 via-dungeon-900/80 to-dungeon-900" />
       </div>
 
+      {/* Right content panel */}
+      <div className="flex-1 lg:w-[70%] lg:ml-[30%] px-6 lg:px-12 py-12 overflow-y-auto">
+      <div className="max-w-2xl mx-auto lg:mx-0">
+        <div className="mb-6">
+          <h1 className="font-['Cinzel',serif] text-4xl text-[#d4b870] mb-2">Journal</h1>
+          <p className="text-[#6a6250] text-sm font-['Crimson_Text',serif]">
+            A record of events, discoveries, and decisions. Review it often. Memory is fallible.
+          </p>
+        </div>
+
       {/* Campaign/Character Filters */}
-      <div className="card mb-6">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-4 mb-6">
         <div className="flex flex-wrap gap-4">
           <div>
-            <label className="label">Campaign</label>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Campaign</label>
             <select
               value={selectedCampaignId}
               onChange={(e) => {
@@ -201,7 +179,7 @@ export function JournalPage() {
                 }
                 setSearchParams(searchParams)
               }}
-              className="input w-48"
+              className="w-48 bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
             >
               <option value="">All Campaigns</option>
               {campaigns?.map((c) => (
@@ -212,7 +190,7 @@ export function JournalPage() {
             </select>
           </div>
           <div>
-            <label className="label">Character</label>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Character</label>
             <select
               value={selectedCharacterId}
               onChange={(e) => {
@@ -222,7 +200,7 @@ export function JournalPage() {
                 }
                 setSearchParams(searchParams)
               }}
-              className="input w-48"
+              className="w-48 bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
             >
               <option value="">All Characters</option>
               {filteredCharacters?.map((c) => (
@@ -243,10 +221,10 @@ export function JournalPage() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center space-x-2 px-4 py-2 rounded transition-colors whitespace-nowrap ${
+              className={`flex items-center space-x-2 px-4 py-2 rounded transition-colors whitespace-nowrap font-['Cinzel',serif] text-sm ${
                 activeTab === tab.id
-                  ? 'bg-parchment-600 text-dungeon-900'
-                  : 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600 hover:text-parchment-100'
+                  ? 'bg-[#b8a060] text-[#0f0d0a]'
+                  : 'bg-[#141210] text-[#8a8270] hover:bg-[rgba(255,245,220,0.03)] hover:text-[#c8c0aa] border border-[rgba(180,160,100,0.1)]'
               }`}
             >
               <Icon className="w-5 h-5" />
@@ -263,9 +241,6 @@ export function JournalPage() {
           characterId={selectedCharacterId}
         />
       )}
-      {activeTab === 'achievements' && (
-        <AchievementsTab characterId={selectedCharacterId} />
-      )}
       {activeTab === 'locations' && (
         <LocationsTab campaignId={selectedCampaignId} />
       )}
@@ -275,6 +250,8 @@ export function JournalPage() {
       {activeTab === 'consequences' && (
         <ConsequencesTab campaignId={selectedCampaignId} />
       )}
+      </div>
+    </div>
     </div>
   )
 }
@@ -287,7 +264,10 @@ function JournalEntriesTab({
   campaignId: string
   characterId: string
 }) {
+  const queryClient = useQueryClient()
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null)
+  const [deletingEntry, setDeletingEntry] = useState<JournalEntry | null>(null)
 
   const queryParams = new URLSearchParams()
   if (campaignId) queryParams.set('campaign_id', campaignId)
@@ -299,21 +279,29 @@ function JournalEntriesTab({
       api.get<JournalEntry[]>(`/journal/entries?${queryParams.toString()}`),
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: (entryId: string) => api.delete(`/journal/entries/${entryId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['journal-entries'] })
+      setDeletingEntry(null)
+    },
+  })
+
   if (isLoading) {
-    return <div className="text-center text-parchment-400 py-12">Loading entries...</div>
+    return <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">Loading entries...</div>
   }
 
   if (!entries?.length) {
     return (
-      <div className="card text-center py-12">
-        <ScrollText className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">No Journal Entries</h2>
-        <p className="text-parchment-400 mb-6">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <ScrollText className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">No Journal Entries</h2>
+        <p className="text-[#8a8270] mb-6 font-['Crimson_Text',serif]">
           Your adventure log is empty. Play a session to generate entries or add your own notes.
         </p>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="btn btn-primary inline-flex items-center space-x-2"
+          className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded inline-flex items-center space-x-2 transition-colors"
         >
           <Plus className="w-5 h-5" />
           <span>Add Note</span>
@@ -327,7 +315,7 @@ function JournalEntriesTab({
       <div className="flex justify-end mb-4">
         <button
           onClick={() => setShowCreateModal(true)}
-          className="btn btn-primary flex items-center space-x-2"
+          className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded flex items-center space-x-2 transition-colors"
         >
           <Plus className="w-5 h-5" />
           <span>Add Note</span>
@@ -336,7 +324,12 @@ function JournalEntriesTab({
 
       <div className="space-y-4">
         {entries.map((entry) => (
-          <JournalEntryCard key={entry.id} entry={entry} />
+          <JournalEntryCard
+            key={entry.id}
+            entry={entry}
+            onEdit={() => setEditingEntry(entry)}
+            onDelete={() => setDeletingEntry(entry)}
+          />
         ))}
       </div>
 
@@ -347,11 +340,44 @@ function JournalEntriesTab({
           onClose={() => setShowCreateModal(false)}
         />
       )}
+
+      {editingEntry && (
+        <EditEntryModal
+          entry={editingEntry}
+          onClose={() => setEditingEntry(null)}
+        />
+      )}
+
+      {deletingEntry && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 w-full max-w-md">
+            <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-4">Delete Entry?</h2>
+            <p className="text-[#c8c0aa] mb-6 font-['Crimson_Text',serif]">
+              Are you sure you want to delete "{deletingEntry.title}"? This cannot be undone.
+            </p>
+            <div className="flex justify-end space-x-2">
+              <button
+                onClick={() => setDeletingEntry(null)}
+                className="bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] px-4 py-2 rounded transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deletingEntry.id)}
+                disabled={deleteMutation.isPending}
+                className="bg-red-600 hover:bg-red-700 text-white font-['Cinzel',serif] px-4 py-2 rounded transition-colors"
+              >
+                {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function JournalEntryCard({ entry }: { entry: JournalEntry }) {
+function JournalEntryCard({ entry, onEdit, onDelete }: { entry: JournalEntry; onEdit: () => void; onDelete: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const Icon = entryTypeIcons[entry.entry_type] || BookOpen
 
@@ -366,18 +392,18 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
   }
 
   return (
-    <div className="card">
+    <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-4">
       <div
         className="flex items-start justify-between cursor-pointer"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-start space-x-3">
-          <div className="p-2 bg-dungeon-700 rounded">
-            <Icon className="w-5 h-5 text-parchment-400" />
+          <div className="p-2 bg-[rgba(255,245,220,0.03)] rounded border border-[rgba(180,160,100,0.1)]">
+            <Icon className="w-5 h-5 text-[#b8a060]" />
           </div>
           <div>
-            <h3 className="font-display text-lg text-parchment-100">{entry.title}</h3>
-            <div className="flex items-center space-x-3 text-sm text-parchment-400">
+            <h3 className="font-['Cinzel',serif] text-lg text-[#d4b870]">{entry.title}</h3>
+            <div className="flex items-center space-x-3 text-sm text-[#8a8270] font-['Crimson_Text',serif]">
               <span className="flex items-center space-x-1">
                 <Clock className="w-4 h-4" />
                 <span>{new Date(entry.created_at).toLocaleDateString()}</span>
@@ -389,27 +415,43 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
             </div>
           </div>
         </div>
-        <ChevronRight
-          className={`w-5 h-5 text-parchment-400 transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
-        />
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={(e) => { e.stopPropagation(); onEdit(); }}
+            className="p-1.5 text-[#6a6250] hover:text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.03)] rounded transition-colors"
+            title="Edit entry"
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-1.5 text-[#6a6250] hover:text-red-400 hover:bg-[rgba(255,245,220,0.03)] rounded transition-colors"
+            title="Delete entry"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+          <ChevronRight
+            className={`w-5 h-5 text-[#8a8270] transition-transform ${
+              expanded ? 'rotate-90' : ''
+            }`}
+          />
+        </div>
       </div>
 
       {expanded && (
-        <div className="mt-4 pt-4 border-t border-dungeon-600">
-          <p className="text-parchment-300 whitespace-pre-wrap">{entry.content}</p>
+        <div className="mt-4 pt-4 border-t border-[rgba(180,160,100,0.1)]">
+          <p className="text-[#c8c0aa] whitespace-pre-wrap font-['Crimson_Text',serif]">{entry.content}</p>
 
           {/* Metadata display for auto-summaries */}
           {entry.entry_type === 'auto_summary' && metadata && (
             <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
               {metadata.key_events && metadata.key_events.length > 0 && (
                 <div>
-                  <h4 className="text-sm text-parchment-400 mb-1">Key Events</h4>
-                  <ul className="text-sm text-parchment-300">
+                  <h4 className="text-sm text-[#8a8270] mb-1 font-['Cinzel',serif]">Key Events</h4>
+                  <ul className="text-sm text-[#c8c0aa] font-['Crimson_Text',serif]">
                     {metadata.key_events.map((event, i) => (
                       <li key={i} className="flex items-start space-x-1">
-                        <Star className="w-3 h-3 mt-1 flex-shrink-0" />
+                        <Star className="w-3 h-3 mt-1 flex-shrink-0 text-[#b8a060]" />
                         <span>{event}</span>
                       </li>
                     ))}
@@ -418,8 +460,8 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
               )}
               {metadata.npcs_encountered && metadata.npcs_encountered.length > 0 && (
                 <div>
-                  <h4 className="text-sm text-parchment-400 mb-1">NPCs Met</h4>
-                  <ul className="text-sm text-parchment-300">
+                  <h4 className="text-sm text-[#8a8270] mb-1 font-['Cinzel',serif]">NPCs Met</h4>
+                  <ul className="text-sm text-[#c8c0aa] font-['Crimson_Text',serif]">
                     {metadata.npcs_encountered.map((npc, i) => (
                       <li key={i}>{npc}</li>
                     ))}
@@ -428,8 +470,8 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
               )}
               {metadata.locations_visited && metadata.locations_visited.length > 0 && (
                 <div>
-                  <h4 className="text-sm text-parchment-400 mb-1">Locations</h4>
-                  <ul className="text-sm text-parchment-300">
+                  <h4 className="text-sm text-[#8a8270] mb-1 font-['Cinzel',serif]">Locations</h4>
+                  <ul className="text-sm text-[#c8c0aa] font-['Crimson_Text',serif]">
                     {metadata.locations_visited.map((loc, i) => (
                       <li key={i}>{loc}</li>
                     ))}
@@ -440,15 +482,15 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
                 {metadata.combat_count !== undefined && metadata.combat_count > 0 && (
                   <div className="flex items-center space-x-2">
                     <Sword className="w-4 h-4 text-red-400" />
-                    <span className="text-sm text-parchment-300">
+                    <span className="text-sm text-[#c8c0aa] font-['Crimson_Text',serif]">
                       {metadata.combat_count} combat{metadata.combat_count > 1 ? 's' : ''}
                     </span>
                   </div>
                 )}
                 {metadata.xp_estimate !== undefined && metadata.xp_estimate > 0 && (
                   <div className="flex items-center space-x-2">
-                    <Star className="w-4 h-4 text-yellow-400" />
-                    <span className="text-sm text-parchment-300">
+                    <Star className="w-4 h-4 text-[#d4b870]" />
+                    <span className="text-sm text-[#c8c0aa] font-['IBM_Plex_Mono',monospace]">
                       ~{metadata.xp_estimate} XP
                     </span>
                   </div>
@@ -514,16 +556,16 @@ function CreateEntryModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="card w-full max-w-lg">
-        <h2 className="font-display text-2xl text-parchment-100 mb-4">Add Journal Note</h2>
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 w-full max-w-lg">
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-4">Add Journal Note</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Campaign</label>
+              <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Campaign</label>
               <select
                 value={selectedCampaign}
                 onChange={(e) => setSelectedCampaign(e.target.value)}
-                className="input w-full"
+                className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
                 required
               >
                 <option value="">Select Campaign</option>
@@ -533,11 +575,11 @@ function CreateEntryModal({
               </select>
             </div>
             <div>
-              <label className="label">Character</label>
+              <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Character</label>
               <select
                 value={selectedCharacter}
                 onChange={(e) => setSelectedCharacter(e.target.value)}
-                className="input w-full"
+                className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
                 required
               >
                 <option value="">Select Character</option>
@@ -548,32 +590,32 @@ function CreateEntryModal({
             </div>
           </div>
           <div>
-            <label className="label">Title</label>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Title</label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="input w-full"
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
               required
             />
           </div>
           <div>
-            <label className="label">Content</label>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Content</label>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              className="input w-full h-32"
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif] h-32"
               required
             />
           </div>
           <div className="flex justify-end space-x-2">
-            <button type="button" onClick={onClose} className="btn btn-secondary">
+            <button type="button" onClick={onClose} className="bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] px-4 py-2 rounded transition-colors">
               Cancel
             </button>
             <button
               type="submit"
               disabled={createMutation.isPending}
-              className="btn btn-primary"
+              className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded transition-colors disabled:opacity-50"
             >
               {createMutation.isPending ? 'Saving...' : 'Save Note'}
             </button>
@@ -584,103 +626,68 @@ function CreateEntryModal({
   )
 }
 
-// Achievements Tab
-function AchievementsTab({ characterId }: { characterId: string }) {
-  const { data: allAchievements, isLoading: loadingAll } = useQuery({
-    queryKey: ['achievements'],
-    queryFn: () => api.get<Achievement[]>('/journal/achievements'),
+function EditEntryModal({
+  entry,
+  onClose,
+}: {
+  entry: JournalEntry
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [title, setTitle] = useState(entry.title)
+  const [content, setContent] = useState(entry.content)
+
+  const updateMutation = useMutation({
+    mutationFn: (data: { title: string; content: string }) =>
+      api.patch<JournalEntry>(`/journal/entries/${entry.id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['journal-entries'] })
+      onClose()
+    },
   })
 
-  const { data: earnedAchievements, isLoading: loadingEarned } = useQuery({
-    queryKey: ['character-achievements', characterId],
-    queryFn: () =>
-      characterId
-        ? api.get<CharacterAchievement[]>(`/journal/characters/${characterId}/achievements`)
-        : Promise.resolve([]),
-    enabled: !!characterId,
-  })
-
-  const isLoading = loadingAll || loadingEarned
-
-  if (isLoading) {
-    return <div className="text-center text-parchment-400 py-12">Loading achievements...</div>
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    updateMutation.mutate({ title, content })
   }
 
-  const earnedIds = new Set(earnedAchievements?.map((a) => a.achievement_id) || [])
-
   return (
-    <div>
-      {characterId && earnedAchievements && earnedAchievements.length > 0 && (
-        <div className="mb-8">
-          <h2 className="font-display text-2xl text-parchment-100 mb-4">Earned Achievements</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {earnedAchievements.map((earned) => (
-              <AchievementCard
-                key={earned.id}
-                achievement={earned.achievement}
-                earned
-                context={earned.context}
-                earnedAt={earned.created_at}
-              />
-            ))}
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 w-full max-w-lg">
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-4">Edit Journal Entry</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Title</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
+              required
+            />
           </div>
-        </div>
-      )}
-
-      <div>
-        <h2 className="font-display text-2xl text-parchment-100 mb-4">
-          {characterId ? 'Available Achievements' : 'All Achievements'}
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {allAchievements
-            ?.filter((a) => !earnedIds.has(a.id))
-            .map((achievement) => (
-              <AchievementCard
-                key={achievement.id}
-                achievement={achievement}
-                earned={false}
-              />
-            ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AchievementCard({
-  achievement,
-  earned,
-  context,
-  earnedAt,
-}: {
-  achievement: Achievement
-  earned: boolean
-  context?: string | null
-  earnedAt?: string
-}) {
-  return (
-    <div className={`card ${!earned ? 'opacity-60' : ''}`}>
-      <div className="flex items-start space-x-3">
-        <div className={`text-3xl ${earned ? '' : 'grayscale'}`}>
-          {achievement.icon || '🏆'}
-        </div>
-        <div className="flex-1">
-          <div className="flex items-center justify-between">
-            <h3 className="font-display text-lg text-parchment-100">{achievement.name}</h3>
-            <span className={`text-xs uppercase ${rarityColors[achievement.rarity]}`}>
-              {achievement.rarity}
-            </span>
+          <div>
+            <label className="text-[#8a8270] text-sm font-['Cinzel',serif] block mb-1">Content</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif] h-32"
+              required
+            />
           </div>
-          <p className="text-sm text-parchment-400">{achievement.description}</p>
-          {earned && context && (
-            <p className="text-sm text-parchment-300 mt-2 italic">"{context}"</p>
-          )}
-          {earned && earnedAt && (
-            <p className="text-xs text-parchment-500 mt-1">
-              Earned: {new Date(earnedAt).toLocaleDateString()}
-            </p>
-          )}
-        </div>
+          <div className="flex justify-end space-x-2">
+            <button type="button" onClick={onClose} className="bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] px-4 py-2 rounded transition-colors">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={updateMutation.isPending}
+              className="bg-[#b8a060] hover:bg-[#d4b870] text-[#0f0d0a] font-['Cinzel',serif] px-4 py-2 rounded transition-colors disabled:opacity-50"
+            >
+              {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   )
@@ -699,10 +706,10 @@ function LocationsTab({ campaignId }: { campaignId: string }) {
 
   if (!campaignId) {
     return (
-      <div className="card text-center py-12">
-        <MapPin className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">Select a Campaign</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <MapPin className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">Select a Campaign</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Choose a campaign to view discovered locations
         </p>
       </div>
@@ -710,15 +717,15 @@ function LocationsTab({ campaignId }: { campaignId: string }) {
   }
 
   if (isLoading) {
-    return <div className="text-center text-parchment-400 py-12">Loading locations...</div>
+    return <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">Loading locations...</div>
   }
 
   if (!locations?.length) {
     return (
-      <div className="card text-center py-12">
-        <MapPin className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">No Locations Discovered</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <MapPin className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">No Locations Discovered</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Explore the world to discover new locations
         </p>
       </div>
@@ -736,31 +743,31 @@ function LocationsTab({ campaignId }: { campaignId: string }) {
 
 function LocationCard({ location }: { location: WorldLocation }) {
   return (
-    <div className="card">
+    <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-4">
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center space-x-2">
-          <MapPin className={`w-5 h-5 ${location.is_cleared ? 'text-green-400' : 'text-parchment-400'}`} />
-          <h3 className="font-display text-lg text-parchment-100">{location.name}</h3>
+          <MapPin className={`w-5 h-5 ${location.is_cleared ? 'text-green-400' : 'text-[#b8a060]'}`} />
+          <h3 className="font-['Cinzel',serif] text-lg text-[#d4b870]">{location.name}</h3>
         </div>
         {location.is_cleared && (
-          <span className="text-xs bg-green-600/20 text-green-400 px-2 py-1 rounded">
+          <span className="text-xs bg-green-600/20 text-green-400 px-2 py-1 rounded font-['Cinzel',serif]">
             Cleared
           </span>
         )}
       </div>
       {location.location_type && (
-        <p className="text-sm text-parchment-500 capitalize mb-2">{location.location_type}</p>
+        <p className="text-sm text-[#6a6250] capitalize mb-2 font-['Crimson_Text',serif]">{location.location_type}</p>
       )}
       {location.description && (
-        <p className="text-sm text-parchment-300 mb-3">{location.description}</p>
+        <p className="text-sm text-[#c8c0aa] mb-3 font-['Crimson_Text',serif]">{location.description}</p>
       )}
-      <div className="flex items-center justify-between text-xs text-parchment-500">
+      <div className="flex items-center justify-between text-xs text-[#6a6250] font-['IBM_Plex_Mono',monospace]">
         <span>Visited {location.visit_count} time{location.visit_count !== 1 ? 's' : ''}</span>
         <span>Discovered: {new Date(location.created_at).toLocaleDateString()}</span>
       </div>
       {location.notes && (
-        <div className="mt-3 pt-3 border-t border-dungeon-600">
-          <p className="text-sm text-parchment-400 italic">{location.notes}</p>
+        <div className="mt-3 pt-3 border-t border-[rgba(180,160,100,0.1)]">
+          <p className="text-sm text-[#8a8270] italic font-['Crimson_Text',serif]">{location.notes}</p>
         </div>
       )}
     </div>
@@ -780,10 +787,10 @@ function EquipmentTab({ characterId }: { characterId: string }) {
 
   if (!characterId) {
     return (
-      <div className="card text-center py-12">
-        <Sword className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">Select a Character</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <Sword className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">Select a Character</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Choose a character to view their equipment history
         </p>
       </div>
@@ -791,15 +798,15 @@ function EquipmentTab({ characterId }: { characterId: string }) {
   }
 
   if (isLoading) {
-    return <div className="text-center text-parchment-400 py-12">Loading equipment...</div>
+    return <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">Loading equipment...</div>
   }
 
   if (!equipment?.length) {
     return (
-      <div className="card text-center py-12">
-        <Sword className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">No Equipment Tracked</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <Sword className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">No Equipment Tracked</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Notable equipment found during adventures will appear here
         </p>
       </div>
@@ -814,7 +821,7 @@ function EquipmentTab({ characterId }: { characterId: string }) {
     <div className="space-y-6">
       {carried.length > 0 && (
         <div>
-          <h2 className="font-display text-xl text-parchment-100 mb-3">Currently Carried</h2>
+          <h2 className="font-['Cinzel',serif] text-xl text-[#d4b870] mb-3">Currently Carried</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {carried.map((item) => (
               <EquipmentCard key={item.id} item={item} />
@@ -824,7 +831,7 @@ function EquipmentTab({ characterId }: { characterId: string }) {
       )}
       {other.length > 0 && (
         <div>
-          <h2 className="font-display text-xl text-parchment-100 mb-3">Past Equipment</h2>
+          <h2 className="font-['Cinzel',serif] text-xl text-[#d4b870] mb-3">Past Equipment</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {other.map((item) => (
               <EquipmentCard key={item.id} item={item} />
@@ -842,46 +849,46 @@ function EquipmentCard({ item }: { item: EquipmentHistory }) {
     stored: 'text-blue-400',
     lost: 'text-red-400',
     destroyed: 'text-red-600',
-    sold: 'text-yellow-400',
-    given: 'text-purple-400',
+    sold: 'text-[#d4b870]',
+    given: 'text-[#b8a060]',
   }
 
   return (
-    <div className="card">
+    <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-4">
       <div className="flex items-start justify-between mb-2">
         <div>
-          <h3 className="font-display text-lg text-parchment-100">
+          <h3 className="font-['Cinzel',serif] text-lg text-[#d4b870]">
             {item.item_name}
             {item.is_magical && (
-              <span className="ml-2 text-xs text-purple-400">Magical</span>
+              <span className="ml-2 text-xs text-[#b8a060]">Magical</span>
             )}
           </h3>
           {item.item_type && (
-            <p className="text-sm text-parchment-500 capitalize">{item.item_type}</p>
+            <p className="text-sm text-[#6a6250] capitalize font-['Crimson_Text',serif]">{item.item_type}</p>
           )}
         </div>
-        <span className={`text-sm capitalize ${statusColors[item.status] || 'text-parchment-400'}`}>
+        <span className={`text-sm capitalize font-['Cinzel',serif] ${statusColors[item.status] || 'text-[#8a8270]'}`}>
           {item.status}
         </span>
       </div>
       {item.obtained_from && (
-        <p className="text-sm text-parchment-300">
-          <span className="text-parchment-500">Obtained:</span> {item.obtained_from}
+        <p className="text-sm text-[#c8c0aa] font-['Crimson_Text',serif]">
+          <span className="text-[#6a6250]">Obtained:</span> {item.obtained_from}
         </p>
       )}
       {item.obtained_location && (
-        <p className="text-sm text-parchment-400">at {item.obtained_location}</p>
+        <p className="text-sm text-[#8a8270] font-['Crimson_Text',serif]">at {item.obtained_location}</p>
       )}
       {item.status_details && (
-        <p className="text-sm text-parchment-400 mt-2 italic">{item.status_details}</p>
+        <p className="text-sm text-[#8a8270] mt-2 italic font-['Crimson_Text',serif]">{item.status_details}</p>
       )}
       {item.history_entries && item.history_entries.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-dungeon-600">
-          <h4 className="text-xs text-parchment-500 mb-2">History</h4>
-          <ul className="text-sm text-parchment-400 space-y-1">
+        <div className="mt-3 pt-3 border-t border-[rgba(180,160,100,0.1)]">
+          <h4 className="text-xs text-[#6a6250] mb-2 font-['Cinzel',serif]">History</h4>
+          <ul className="text-sm text-[#8a8270] space-y-1 font-['Crimson_Text',serif]">
             {item.history_entries.map((entry, i) => (
               <li key={i}>
-                <span className="text-parchment-500">{entry.date}:</span> {entry.event}
+                <span className="text-[#6a6250] font-['IBM_Plex_Mono',monospace]">{entry.date}:</span> {entry.event}
               </li>
             ))}
           </ul>
@@ -904,10 +911,10 @@ function ConsequencesTab({ campaignId }: { campaignId: string }) {
 
   if (!campaignId) {
     return (
-      <div className="card text-center py-12">
-        <AlertTriangle className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">Select a Campaign</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <AlertTriangle className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">Select a Campaign</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Choose a campaign to view world consequences
         </p>
       </div>
@@ -915,15 +922,15 @@ function ConsequencesTab({ campaignId }: { campaignId: string }) {
   }
 
   if (isLoading) {
-    return <div className="text-center text-parchment-400 py-12">Loading consequences...</div>
+    return <div className="text-center text-[#8a8270] py-12 font-['Crimson_Text',serif]">Loading consequences...</div>
   }
 
   if (!consequences?.length) {
     return (
-      <div className="card text-center py-12">
-        <AlertTriangle className="w-16 h-16 text-parchment-500 mx-auto mb-4" />
-        <h2 className="font-display text-2xl text-parchment-100 mb-2">No World Events</h2>
-        <p className="text-parchment-400">
+      <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-6 text-center py-12">
+        <AlertTriangle className="w-16 h-16 text-[#6a6250] mx-auto mb-4" />
+        <h2 className="font-['Cinzel',serif] text-2xl text-[#d4b870] mb-2">No World Events</h2>
+        <p className="text-[#8a8270] font-['Crimson_Text',serif]">
           Your actions haven't had major consequences... yet
         </p>
       </div>
@@ -942,62 +949,62 @@ function ConsequencesTab({ campaignId }: { campaignId: string }) {
 function ConsequenceCard({ consequence }: { consequence: WorldConsequence }) {
   const scopeColors: Record<string, string> = {
     local: 'bg-green-600/20 text-green-400',
-    regional: 'bg-yellow-600/20 text-yellow-400',
+    regional: 'bg-[#b8a060]/20 text-[#d4b870]',
     global: 'bg-red-600/20 text-red-400',
   }
 
   return (
-    <div className="card">
+    <div className="bg-[#141210] border border-[rgba(180,160,100,0.1)] rounded-lg p-4">
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center space-x-2">
-          <AlertTriangle className={`w-5 h-5 ${consequence.is_active ? 'text-yellow-400' : 'text-parchment-500'}`} />
-          <span className={`text-xs px-2 py-1 rounded ${scopeColors[consequence.scope]}`}>
+          <AlertTriangle className={`w-5 h-5 ${consequence.is_active ? 'text-[#d4b870]' : 'text-[#6a6250]'}`} />
+          <span className={`text-xs px-2 py-1 rounded font-['Cinzel',serif] ${scopeColors[consequence.scope]}`}>
             {consequence.scope}
           </span>
           {!consequence.is_permanent && (
-            <span className="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded">
+            <span className="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded font-['Cinzel',serif]">
               Temporary
             </span>
           )}
         </div>
         {!consequence.is_active && (
-          <span className="text-xs text-parchment-500">Resolved</span>
+          <span className="text-xs text-[#6a6250] font-['Cinzel',serif]">Resolved</span>
         )}
       </div>
 
       <div className="mb-3">
-        <h4 className="text-sm text-parchment-500">Action</h4>
-        <p className="text-parchment-200">{consequence.trigger_action}</p>
+        <h4 className="text-sm text-[#6a6250] font-['Cinzel',serif]">Action</h4>
+        <p className="text-[#c8c0aa] font-['Crimson_Text',serif]">{consequence.trigger_action}</p>
       </div>
 
       <div>
-        <h4 className="text-sm text-parchment-500">Consequence</h4>
-        <p className="text-parchment-200">{consequence.consequence}</p>
+        <h4 className="text-sm text-[#6a6250] font-['Cinzel',serif]">Consequence</h4>
+        <p className="text-[#c8c0aa] font-['Crimson_Text',serif]">{consequence.consequence}</p>
       </div>
 
       {(consequence.affected_npcs.length > 0 ||
         consequence.affected_locations.length > 0 ||
         consequence.affected_factions.length > 0) && (
-        <div className="mt-3 pt-3 border-t border-dungeon-600 flex flex-wrap gap-2">
+        <div className="mt-3 pt-3 border-t border-[rgba(180,160,100,0.1)] flex flex-wrap gap-2">
           {consequence.affected_npcs.map((npc, i) => (
-            <span key={`npc-${i}`} className="text-xs bg-dungeon-700 text-parchment-300 px-2 py-1 rounded">
+            <span key={`npc-${i}`} className="text-xs bg-[rgba(255,245,220,0.03)] text-[#c8c0aa] px-2 py-1 rounded border border-[rgba(180,160,100,0.1)] font-['Crimson_Text',serif]">
               {npc}
             </span>
           ))}
           {consequence.affected_locations.map((loc, i) => (
-            <span key={`loc-${i}`} className="text-xs bg-dungeon-700 text-parchment-300 px-2 py-1 rounded">
+            <span key={`loc-${i}`} className="text-xs bg-[rgba(255,245,220,0.03)] text-[#c8c0aa] px-2 py-1 rounded border border-[rgba(180,160,100,0.1)] font-['Crimson_Text',serif]">
               {loc}
             </span>
           ))}
           {consequence.affected_factions.map((faction, i) => (
-            <span key={`faction-${i}`} className="text-xs bg-dungeon-700 text-parchment-300 px-2 py-1 rounded">
+            <span key={`faction-${i}`} className="text-xs bg-[rgba(255,245,220,0.03)] text-[#c8c0aa] px-2 py-1 rounded border border-[rgba(180,160,100,0.1)] font-['Crimson_Text',serif]">
               {faction}
             </span>
           ))}
         </div>
       )}
 
-      <div className="mt-2 text-xs text-parchment-500">
+      <div className="mt-2 text-xs text-[#6a6250] font-['IBM_Plex_Mono',monospace]">
         {new Date(consequence.created_at).toLocaleDateString()}
       </div>
     </div>
