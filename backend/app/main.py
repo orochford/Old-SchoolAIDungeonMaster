@@ -25,6 +25,7 @@ from app.domains.sourcebooks import models as sourcebooks_models
 from app.domains.journal import models as journal_models
 from app.domains.spells import models as spells_models
 from app.domains.adventures import models as adventures_models
+from app.domains.settings import models as settings_models
 
 # Socket.IO server
 sio = socketio.AsyncServer(
@@ -35,10 +36,43 @@ sio = socketio.AsyncServer(
 )
 
 
+async def load_settings_from_db():
+    """Load AI settings from database on startup."""
+    from app.core.database import AsyncSessionLocal
+    from app.domains.settings.models import AppSetting
+    from sqlalchemy import select
+    import app.config as config_module
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(AppSetting))
+        db_settings = {s.key: s.value for s in result.scalars().all()}
+
+        # Load each setting if it exists in database
+        if "gm_provider" in db_settings:
+            config_module.settings.gm_provider = db_settings["gm_provider"]
+        if "gm_claude_model" in db_settings:
+            config_module.settings.gm_claude_model = db_settings["gm_claude_model"]
+        if "gm_openai_model" in db_settings:
+            config_module.settings.gm_openai_model = db_settings["gm_openai_model"]
+        if "processing_provider" in db_settings:
+            config_module.settings.processing_provider = db_settings["processing_provider"]
+        if "processing_claude_model" in db_settings:
+            config_module.settings.processing_claude_model = db_settings["processing_claude_model"]
+        if "processing_openai_model" in db_settings:
+            config_module.settings.processing_openai_model = db_settings["processing_openai_model"]
+
+        logger.info(f"Loaded settings from database: gm_provider={config_module.settings.gm_provider}, "
+                    f"processing_openai_model={config_module.settings.processing_openai_model}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    try:
+        await load_settings_from_db()
+    except Exception as e:
+        logger.warning(f"Could not load settings from database: {e}")
     yield
     # Shutdown
 
@@ -92,16 +126,20 @@ class APIKeysUpdate(BaseModel):
     processing_provider: Optional[str] = None  # 'claude' or 'openai'
     processing_claude_model: Optional[str] = None
     processing_openai_model: Optional[str] = None
+    # DM Voice
+    dm_style: Optional[str] = None
 
 @app.post(f"{settings.api_v1_prefix}/settings/keys")
 async def update_api_keys(keys: APIKeysUpdate):
-    """Update API keys and AI settings at runtime."""
+    """Update API keys and AI settings at runtime, persisting to database."""
     import app.config as config_module
-    import logging
-    logger = logging.getLogger(__name__)
+    from app.core.database import AsyncSessionLocal
+    from app.domains.settings.models import AppSetting
+    from sqlalchemy import select
 
     logger.info(f"Updating settings - GM provider: {keys.gm_provider}, GM model: {keys.gm_openai_model or keys.gm_claude_model}")
 
+    # Update in-memory settings
     if keys.openai_api_key is not None:
         config_module.settings.openai_api_key = keys.openai_api_key
     if keys.claude_api_key is not None:
@@ -124,6 +162,37 @@ async def update_api_keys(keys: APIKeysUpdate):
     if keys.processing_openai_model is not None:
         config_module.settings.processing_openai_model = keys.processing_openai_model
 
+    # DM Voice
+    if keys.dm_style is not None:
+        config_module.settings.dm_style = keys.dm_style
+
+    # Persist to database
+    async with AsyncSessionLocal() as db:
+        settings_to_save = {
+            "gm_provider": keys.gm_provider,
+            "gm_claude_model": keys.gm_claude_model,
+            "gm_openai_model": keys.gm_openai_model,
+            "processing_provider": keys.processing_provider,
+            "processing_claude_model": keys.processing_claude_model,
+            "processing_openai_model": keys.processing_openai_model,
+            "dm_style": keys.dm_style,
+        }
+
+        for key, value in settings_to_save.items():
+            if value is not None:
+                # Upsert setting
+                result = await db.execute(
+                    select(AppSetting).where(AppSetting.key == key)
+                )
+                existing = result.scalar_one_or_none()
+                if existing:
+                    existing.value = value
+                else:
+                    db.add(AppSetting(key=key, value=value))
+
+        await db.commit()
+        logger.info("Settings persisted to database")
+
     return {"status": "updated"}
 
 @app.get(f"{settings.api_v1_prefix}/settings/keys")
@@ -144,6 +213,7 @@ async def get_ai_config():
         "processing_provider": settings.processing_provider,
         "processing_claude_model": settings.processing_claude_model,
         "processing_openai_model": settings.processing_openai_model,
+        "dm_style": settings.dm_style,
     }
 
 @app.post(f"{settings.api_v1_prefix}/settings/test-openai")

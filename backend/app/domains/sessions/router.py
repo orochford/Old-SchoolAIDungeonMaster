@@ -25,6 +25,8 @@ from app.llm.adventure_planner import AdventurePlanner
 from app.domains.sessions.recap_service import RecapService, get_previous_session_count
 from app.domains.sessions.framing_service import CampaignFramingService
 from app.domains.journal.summary_service import SessionSummaryService
+from app.domains.adventures.module_analyzer import ModuleAnalyzer
+from app.game.middleware import GameMiddleware
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -295,6 +297,7 @@ async def play_session(websocket: WebSocket, session_id: UUID):
 
             dm_service = DMService(db)
             adventure_planner = AdventurePlanner(db)
+            game_middleware = GameMiddleware(db)
 
             # Plan adventure if campaign has adventure module and session has no adventure state
             adventure_title = None
@@ -325,17 +328,92 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                         "message": f"Adventure planning failed: {str(planning_error)}. Continuing without adventure context."
                     })
 
+                # Run module analysis if not already done (for B1-style blank room population)
+                try:
+                    current_state = game_session.adventure_state or {}
+                    if not current_state.get("module_analyzed"):
+                        from app.domains.adventures.retriever import AdventureDataRetriever
+                        retriever = AdventureDataRetriever(db)
+                        module = await retriever.get_module_for_document(campaign.adventure_document_id)
+
+                        if module:
+                            logger.info(f"[ModuleAnalyzer] Starting analysis for session {session_id}")
+                            analyzer = ModuleAnalyzer(db)
+                            analysis = await analyzer.analyze_module(module.id)
+
+                            if analysis:
+                                # Merge analysis into adventure_state
+                                current_state = dict(game_session.adventure_state or {})
+                                current_state["module_analyzed"] = True
+                                current_state["dm_briefing"] = analysis.get("dm_briefing", "")
+                                if analysis.get("populated_rooms"):
+                                    current_state["populated_rooms"] = analysis["populated_rooms"]
+                                    logger.info(f"[ModuleAnalyzer] Populated {len(analysis['populated_rooms'])} blank rooms")
+                                game_session.adventure_state = current_state
+                                await db.flush()
+                                logger.info(f"[ModuleAnalyzer] Analysis complete for session {session_id}")
+                except Exception as analysis_error:
+                    logger.exception(f"Error during module analysis for session {session_id}: {analysis_error}")
+                    # Continue without analysis - don't fail the session
+
             # Send initial connection success with adventure info and game state
             connected_msg = {
                 "type": "connected",
                 "session_id": str(session_id),
                 "character_name": character.name,
                 "game_state": game_session.game_state,
+                # Always include adventure_state if it exists (for location tracking)
+                "adventure_state": game_session.adventure_state,
             }
             if adventure_title:
                 connected_msg["adventure_title"] = adventure_title
-                connected_msg["adventure_state"] = game_session.adventure_state
             await websocket.send_json(connected_msg)
+
+            # Restore active encounter state on reconnect
+            if game_session.active_combat_id:
+                try:
+                    from app.domains.combat.models import (
+                        CombatEncounter, CombatParticipant, CombatStatus, ParticipantType,
+                    )
+                    enc_result = await db.execute(
+                        select(CombatEncounter)
+                        .options(selectinload(CombatEncounter.participants))
+                        .where(CombatEncounter.id == game_session.active_combat_id)
+                    )
+                    active_encounter = enc_result.scalar_one_or_none()
+
+                    if active_encounter and active_encounter.status == CombatStatus.ACTIVE:
+                        # Send encounter state to client
+                        participants_data = []
+                        for p in active_encounter.participants:
+                            participants_data.append({
+                                "name": p.name,
+                                "type": p.participant_type.value if hasattr(p.participant_type, 'value') else str(p.participant_type),
+                                "hp": p.current_hp,
+                                "max_hp": p.max_hp,
+                                "ac": p.armor_class,
+                                "initiative": p.initiative,
+                                "defeated": p.current_hp <= 0,
+                                "morale_broken": p.morale_broken or False,
+                            })
+                        await websocket.send_json({
+                            "type": "encounter_state",
+                            "encounter_id": str(active_encounter.id),
+                            "encounter_name": active_encounter.name,
+                            "round": active_encounter.current_round,
+                            "participants": participants_data,
+                        })
+                        logger.info(f"Restored active encounter for session {session_id}")
+                    else:
+                        # Stale combat reference — clear it
+                        game_session.active_combat_id = None
+                        game_state = dict(game_session.game_state or {})
+                        game_state["in_combat"] = False
+                        game_session.game_state = game_state
+                        await db.flush()
+                        logger.info(f"Cleared stale combat reference for session {session_id}")
+                except Exception as enc_error:
+                    logger.warning(f"Failed to restore encounter state: {enc_error}")
 
             # Check for previous sessions and send recap if available
             previous_count = await get_previous_session_count(
@@ -414,29 +492,10 @@ async def play_session(websocket: WebSocket, session_id: UUID):
 
                 logger.info(f"[Map] Starting map loading for session {session_id}")
                 map_service = MapService(db)
-                active_map = await map_service.get_active_map(game_session.campaign_id)
-                logger.info(f"[Map] Active map: {active_map}")
 
-                if active_map:
-                    # Use existing dungeon map
-                    map_data = await map_service.get_map_data(active_map.id, include_fog=True)
-                    if map_data:
-                        await websocket.send_json({
-                            "type": "tool_result",
-                            "tool_name": "display_map",
-                            "result": {
-                                "map_id": map_data["id"],
-                                "map_name": map_data["name"],
-                                "rendered_map": map_data["rendered_map"],
-                                "width": map_data["width"],
-                                "height": map_data["height"],
-                                "player_position": map_data["player_position"],
-                                "markers": map_data["markers"],
-                                "exploration_progress": f"{map_data['revealed_count']}/{map_data['total_cells']} cells explored",
-                            },
-                        })
-                        logger.info(f"[Map] Sent active dungeon map for session {session_id}")
-                elif campaign and campaign.adventure_document_id:
+                # PRIORITY 1: Use adventure connection map if campaign has adventure module
+                # This shows locations from the parsed module which is more useful for adventure play
+                if campaign and campaign.adventure_document_id:
                     # Generate connection map from adventure locations
                     logger.info(f"[Map] No active map, checking adventure module for doc {campaign.adventure_document_id}")
                     retriever = AdventureDataRetriever(db)
@@ -461,6 +520,34 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                             logger.info(f"[Map] Built {len(full_locations)} full locations with exits")
 
                             adventure_state = game_session.adventure_state or {}
+
+                            # Initialize location for new sessions - start at location "1" (entrance)
+                            if not adventure_state.get('current_location_key') and full_locations:
+                                # Find location "1" or use first location
+                                start_loc = next((loc for loc in full_locations if loc['location_key'] == '1'), full_locations[0])
+                                adventure_state['current_location_key'] = start_loc['location_key']
+                                adventure_state['current_location'] = start_loc['name']
+                                adventure_state['visited_locations'] = [start_loc['location_key']]
+                                game_session.adventure_state = adventure_state
+                                await db.flush()
+                                await db.commit()
+                                # Refresh session to ensure it's still usable after commit
+                                await db.refresh(game_session)
+                                logger.info(f"[Map] Persisted initial adventure_state: location={start_loc['location_key']} - {start_loc['name']}")
+                                # Update local variable to match persisted state
+                                adventure_state = game_session.adventure_state or {}
+                                # Send location update to frontend (since connected msg was sent before initialization)
+                                await websocket.send_json({
+                                    "type": "tool_result",
+                                    "tool_name": "update_adventure_location",
+                                    "result": {
+                                        "success": True,
+                                        "location": start_loc['name'],
+                                        "location_key": start_loc['location_key'],
+                                        "is_new_location": True,
+                                    },
+                                })
+
                             explored_keys = adventure_state.get('visited_locations', [])
                             current_key = adventure_state.get('current_location_key')
                             logger.info(f"[Map] Current: {current_key}, Explored: {explored_keys}")
@@ -492,7 +579,28 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                     else:
                         logger.warning(f"[Map] No parsed module found for document {campaign.adventure_document_id}")
                 else:
-                    logger.info(f"[Map] No map source available (no active map, no adventure_document_id)")
+                    # PRIORITY 2: Fall back to dungeon map if no adventure module
+                    active_map = await map_service.get_active_map(game_session.campaign_id)
+                    if active_map:
+                        map_data = await map_service.get_map_data(active_map.id, include_fog=True)
+                        if map_data:
+                            await websocket.send_json({
+                                "type": "tool_result",
+                                "tool_name": "display_map",
+                                "result": {
+                                    "map_id": map_data["id"],
+                                    "map_name": map_data["name"],
+                                    "rendered_map": map_data["rendered_map"],
+                                    "width": map_data["width"],
+                                    "height": map_data["height"],
+                                    "player_position": map_data["player_position"],
+                                    "markers": map_data["markers"],
+                                    "exploration_progress": f"{map_data['revealed_count']}/{map_data['total_cells']} cells explored",
+                                },
+                            })
+                            logger.info(f"[Map] Sent active dungeon map for session {session_id}")
+                    else:
+                        logger.info(f"[Map] No map source available (no adventure module, no active dungeon map)")
             except Exception as map_error:
                 logger.exception(f"[Map] Failed to load map for session {session_id}: {map_error}")
 
@@ -533,7 +641,15 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                     # Re-sync our game_session object with the fresh state
                     game_session.adventure_state = fresh_state
                 else:
-                    logger.info(f"[Session] Lost race: opening_generated already True for session {session_id}")
+                    # Flag is True but no messages exist - previous generation must have failed
+                    # Reset the flag and regenerate
+                    logger.warning(f"[Session] opening_generated=True but no valid messages for session {session_id}, resetting flag to regenerate")
+                    fresh_state["opening_generated"] = True
+                    fresh_session.adventure_state = fresh_state
+                    await db.flush()
+                    await db.commit()
+                    should_generate_opening = True
+                    game_session.adventure_state = fresh_state
 
             if should_generate_opening:
 
@@ -599,6 +715,22 @@ async def play_session(websocket: WebSocket, session_id: UUID):
                         await websocket.send_json({"type": "dm_typing"})
 
                         try:
+                            # Pre-process through deterministic middleware
+                            # This handles movement, search, and other mechanics before LLM
+                            middleware_result = await game_middleware.pre_process(
+                                player_input=player_input,
+                                session=game_session,
+                            )
+
+                            # Log detected actions
+                            if middleware_result.movement and middleware_result.movement.detected:
+                                if middleware_result.movement.is_valid:
+                                    logger.info(f"[Game] Valid movement: {middleware_result.movement.direction} -> {middleware_result.movement.target_location_key}")
+                                else:
+                                    logger.info(f"[Game] Invalid movement: {middleware_result.movement.direction}")
+                            if middleware_result.search and middleware_result.search.detected:
+                                logger.info(f"[Game] Search detected: {middleware_result.search.search_type}")
+
                             # Process through LLM and stream response
                             async for event in dm_service.process_player_action(
                                 game_session=game_session,
@@ -632,12 +764,17 @@ async def play_session(websocket: WebSocket, session_id: UUID):
 
                         except Exception as action_error:
                             logger.exception(f"Error processing player action: {action_error}")
+                            # Rollback any partial changes to keep DB consistent
+                            await db.rollback()
                             try:
                                 await websocket.send_json({
                                     "type": "error",
-                                    "message": f"Error processing action: {str(action_error)}"
+                                    "message": f"Error processing action: {str(action_error)}. Please try again."
                                 })
                                 await websocket.send_json({"type": "dm_complete"})
+                                # Refresh session state after rollback so we can continue
+                                await db.refresh(game_session)
+                                await db.refresh(character)
                             except RuntimeError:
                                 # WebSocket already closed
                                 break

@@ -51,6 +51,9 @@ class AdventureModule(Base, BaseModel):
     # Path to full module markdown file (for complete LLM reference)
     full_markdown_path = Column(String(512), nullable=True)
 
+    # Path to structured markdown export (enriched extraction results)
+    structured_markdown_path = Column(String(512), nullable=True)
+
     # Rumors table as structured JSON
     # Format: [{"roll": "1-2", "rumor": "...", "is_true": true}, ...]
     rumors_table = Column(JSONB, default=[])

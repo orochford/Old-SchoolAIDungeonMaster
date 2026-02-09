@@ -5,6 +5,7 @@
 @layer base {
   html {
     font-family: 'Crimson Text', Georgia, serif;
+    font-size: 17px;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -14,7 +15,7 @@
 
 @layer components {
   .btn {
-    @apply px-4 py-2 rounded font-semibold transition-colors duration-200;
+    @apply px-4 py-2 rounded font-semibold transition-colors duration-200 uppercase tracking-wider text-sm;
   }
 
   .btn-primary {
@@ -22,11 +23,15 @@
   }
 
   .btn-secondary {
-    @apply bg-dungeon-700 text-parchment-100 hover:bg-dungeon-600 border border-parchment-600;
+    @apply bg-dungeon-700 text-parchment-100 hover:bg-dungeon-600 border border-dungeon-600;
   }
 
   .btn-danger {
-    @apply bg-red-800 text-parchment-100 hover:bg-red-700;
+    @apply bg-red-900 text-parchment-100 hover:bg-red-800;
+  }
+
+  .btn-ghost {
+    @apply text-parchment-400 hover:text-parchment-100 bg-transparent;
   }
 
   .card {
@@ -40,6 +45,21 @@
 
   .label {
     @apply text-parchment-300 font-semibold text-sm uppercase tracking-wide;
+  }
+
+  /* Ritual panel - parchment-toned for important actions */
+  .ritual-panel {
+    @apply bg-gradient-to-br from-dungeon-700/80 to-dungeon-800 border border-parchment-700/30 rounded-lg p-6;
+    box-shadow: inset 0 1px 0 rgba(201, 164, 92, 0.1);
+  }
+
+  /* Nav link styling */
+  .nav-link {
+    @apply px-4 py-2 text-parchment-400 hover:text-parchment-100 transition-colors uppercase tracking-wider text-sm;
+  }
+
+  .nav-link-active {
+    @apply text-parchment-100 border-b-2 border-parchment-600;
   }
 
   /* Scrollbar styling */

@@ -8,6 +8,7 @@ This pass extracts full location details with awareness of overall adventure:
 """
 
 import logging
+import re
 from typing import Dict, Any, List
 from uuid import UUID
 
@@ -85,6 +86,15 @@ Pay special attention to:
 - Note what players see immediately vs what requires searching
 - Include ALL exits including secret ones
 - For magical effects, include the FULL TEXT of any spoken messages or inscriptions
+
+## CRITICAL: EXIT DIRECTIONS
+- Only include exits that are EXPLICITLY described in THIS room's text
+- Use the EXACT direction stated in the module (north, south, east, west, etc.)
+- If the module says "a passage leads north to room 2", record {{"north": "2"}}
+- Do NOT invent directions or infer them from other rooms
+- If a room text doesn't explicitly state a direction, DO NOT include that exit
+- Example: If room 2's text says "south leads back to room 1" then room 2 has {{"south": "1"}}
+- Do NOT assume that if room 1 goes north to room 2, then room 2 goes south to room 1
 
 ## OUTPUT FORMAT
 ```json
@@ -273,8 +283,278 @@ class LocationsPass(BasePass):
 
             await self.db.flush()
 
+            # Per-batch verification: retry individually for any rooms the LLM missed
+            extracted_keys_in_batch = {str(loc.get('location_key', '')) for loc in extracted_locs}
+            expected_keys_in_batch = {str(r.get('location_key', '')) for r in batch}
+            missing_from_batch = expected_keys_in_batch - extracted_keys_in_batch
+
+            if missing_from_batch:
+                self._log(f"  Batch {batch_num}: {len(missing_from_batch)} room(s) missing, retrying individually: {missing_from_batch}")
+                for missing_key in missing_from_batch:
+                    missing_room = next((r for r in batch if str(r.get('location_key', '')) == missing_key), None)
+                    if not missing_room:
+                        continue
+
+                    single_text = self._build_batch_text(full_text, [missing_room], rooms)
+                    retry_prompt = PASS2_LOCATION_PROMPT.replace("{context}", context_prompt)
+                    retry_result = await self._call_llm(
+                        retry_prompt, single_text,
+                        stage_name=f"pass2_retry_{missing_key}"
+                    )
+
+                    if not retry_result:
+                        self._log(f"    Retry failed for room {missing_key}")
+                        continue
+
+                    retry_locs = retry_result.get('locations', [])
+                    for loc_data in retry_locs:
+                        location_key = str(loc_data.get('location_key', ''))
+                        if not location_key or location_key in updates.locations:
+                            continue
+
+                        room_source_text = self._extract_location_text(full_text, missing_room)
+                        if room_source_text:
+                            self._validate_extraction(loc_data, room_source_text)
+
+                        exits = loc_data.get('exits', {})
+                        if not isinstance(exits, dict):
+                            exits = {}
+
+                        loc_details = LocationDetails(
+                            location_key=location_key,
+                            name=loc_data.get('name', 'Unknown'),
+                            dm_description=loc_data.get('dm_description', ''),
+                            read_aloud_text=loc_data.get('read_aloud_text'),
+                            features=loc_data.get('features', []),
+                            exits=exits,
+                            visible_items=loc_data.get('visible_items', []),
+                            hidden_elements=loc_data.get('hidden_elements', []),
+                            treasure=loc_data.get('treasure', []),
+                            traps=loc_data.get('traps', []),
+                            secrets=loc_data.get('secrets', []),
+                            dungeon_level=self._safe_int(loc_data.get('dungeon_level'), 1),
+                            tier=loc_data.get('tier'),
+                        )
+                        updates.locations[location_key] = loc_details
+
+                        db_location = await self._create_location_record(
+                            module, loc_data, batch, location_ids, room_source_text
+                        )
+                        if db_location:
+                            location_ids[location_key] = db_location.id
+                            self._log(f"    Retry success: [{len(updates.locations)}/{total}] {loc_details.name}")
+
+                    await self.db.flush()
+
         self._log(f"Extracted {len(updates.locations)} locations")
+
+        # Post-process: Detect template-only rooms (e.g. B1's blank "Monster: / Treasure:" rooms)
+        # and give them a proper placeholder instead of raw template text
+        TEMPLATE_PATTERNS = ['monster:', 'treasure & location:', 'treasure:']
+        for loc_key, loc in updates.locations.items():
+            desc = (loc.dm_description or '').strip()
+            # Check if description is ONLY template headers with no real content
+            desc_lower = desc.lower()
+            stripped = desc_lower
+            for pat in TEMPLATE_PATTERNS:
+                stripped = stripped.replace(pat, '')
+            # Also remove "adjacent locations" lines the LLM adds
+            stripped = re.sub(r'adjacent locations.*', '', stripped, flags=re.DOTALL)
+            stripped = stripped.strip()
+            if not stripped and desc_lower:
+                # This is a template-only room — replace with meaningful placeholder
+                loc.dm_description = (
+                    f"This {loc.name.lower()} is left intentionally unstocked. "
+                    "The DM should populate it with monsters, treasure, and details as desired."
+                )
+                result = await self.db.execute(
+                    select(AdventureLocation)
+                    .where(AdventureLocation.module_id == module.id)
+                    .where(AdventureLocation.location_key == loc_key)
+                )
+                db_loc = result.scalar_one_or_none()
+                if db_loc:
+                    db_loc.dm_description = loc.dm_description
+                    db_loc.source_text = 'Blank room - DM to stock with monsters and treasure.'
+                self._log(f"  Template-only room detected: {loc_key}. {loc.name}")
+
+        await self.db.flush()
+
+        # Post-process: Re-extract locations with empty descriptions
+        empty_locs = [
+            (key, loc) for key, loc in updates.locations.items()
+            if not loc.dm_description or loc.dm_description.strip() in ('', 'No description available.', 'Gap-filled location')
+        ]
+
+        if empty_locs:
+            self._log(f"  {len(empty_locs)} location(s) have empty descriptions, re-extracting...")
+            for loc_key, loc in empty_locs:
+                room = next((r for r in rooms if str(r.get('location_key', '')) == loc_key), None)
+                if not room:
+                    continue
+                single_text = self._build_batch_text(full_text, [room], rooms)
+                retry_prompt = PASS2_LOCATION_PROMPT.replace("{context}", context_prompt)
+                retry_result = await self._call_llm(retry_prompt, single_text, stage_name=f"pass2_enrich_{loc_key}")
+                if not retry_result:
+                    continue
+                retry_locs = retry_result.get('locations', [])
+                for loc_data in retry_locs:
+                    if str(loc_data.get('location_key', '')) == loc_key and loc_data.get('dm_description'):
+                        # Update context record — description enrichment only
+                        # Do NOT overwrite exits/traps/secrets if they already have data
+                        loc.dm_description = loc_data['dm_description']
+                        loc.read_aloud_text = loc_data.get('read_aloud_text') or loc.read_aloud_text
+                        if not loc.features and loc_data.get('features'):
+                            loc.features = loc_data['features']
+                        if not loc.visible_items and loc_data.get('visible_items'):
+                            loc.visible_items = loc_data['visible_items']
+                        if not loc.hidden_elements and loc_data.get('hidden_elements'):
+                            loc.hidden_elements = loc_data['hidden_elements']
+                        # Only adopt exits if we currently have none
+                        new_exits = loc_data.get('exits')
+                        if not loc.exits and isinstance(new_exits, dict) and new_exits:
+                            loc.exits = new_exits
+                        if not loc.treasure and loc_data.get('treasure'):
+                            loc.treasure = loc_data['treasure']
+                        if not loc.traps and loc_data.get('traps'):
+                            loc.traps = loc_data['traps']
+                        if not loc.secrets and loc_data.get('secrets'):
+                            loc.secrets = loc_data['secrets']
+
+                        # Update DB record
+                        result = await self.db.execute(
+                            select(AdventureLocation)
+                            .where(AdventureLocation.module_id == module.id)
+                            .where(AdventureLocation.location_key == loc_key)
+                        )
+                        db_loc = result.scalar_one_or_none()
+                        if db_loc:
+                            db_loc.dm_description = loc.dm_description
+                            db_loc.read_aloud_text = loc.read_aloud_text
+                            if loc.features:
+                                db_loc.features = loc.features
+                            if loc.exits:
+                                db_loc.exits = loc.exits
+                            if loc.traps:
+                                db_loc.traps = loc.traps
+                            if loc.secrets:
+                                db_loc.secrets = loc.secrets
+                            if loc.treasure:
+                                db_loc.treasure = loc.treasure
+
+                        self._log(f"    Re-extracted description for {loc_key}: {loc.name}")
+                        break
+
+            await self.db.flush()
+
+        # Post-process: Reconcile exit directions
+        await self._reconcile_exits(module.id, updates)
+
         return updates
+
+    async def _reconcile_exits(
+        self,
+        module_id: UUID,
+        context: ExtractionContext
+    ) -> None:
+        """Post-process to fix inconsistent exit directions.
+
+        If room A says north→B, then room B should say south→A (opposite direction).
+        This fixes cases where the LLM extracted incorrect directions.
+        """
+        self._log("Reconciling exit directions...")
+
+        opposite_dirs = {
+            'north': 'south', 'south': 'north',
+            'east': 'west', 'west': 'east',
+            'northeast': 'southwest', 'southwest': 'northeast',
+            'northwest': 'southeast', 'southeast': 'northwest',
+            'up': 'down', 'down': 'up',
+        }
+
+        fixes_made = 0
+        warnings = []
+
+        # Build a map of all exits
+        all_exits: Dict[str, Dict[str, str]] = {}  # location_key -> {direction: destination}
+        for loc_key, loc in context.locations.items():
+            all_exits[loc_key] = dict(loc.exits) if loc.exits else {}
+
+        # Check for inconsistencies
+        for loc_key, exits in all_exits.items():
+            for direction, dest_key in exits.items():
+                # Skip secret exits - they may intentionally be one-way
+                if 'secret' in direction.lower():
+                    continue
+
+                # Get the base direction (remove prefixes like "secret_")
+                base_dir = direction.lower().replace('_door', '').replace('secret_', '')
+                opposite = opposite_dirs.get(base_dir)
+
+                if not opposite:
+                    continue
+
+                # Check if destination has a return path
+                dest_exits = all_exits.get(dest_key, {})
+                return_dest = None
+
+                # Look for any exit from dest back to this location
+                for dest_dir, dest_dest in dest_exits.items():
+                    if dest_dest == loc_key:
+                        return_dest = dest_dir
+                        break
+
+                if return_dest is None:
+                    # Destination has no return path - add one
+                    warnings.append(
+                        f"  {loc_key}→{direction}→{dest_key} but {dest_key} has no return to {loc_key}"
+                    )
+                    # Add the missing return exit
+                    if dest_key in context.locations:
+                        if context.locations[dest_key].exits is None:
+                            context.locations[dest_key].exits = {}
+                        context.locations[dest_key].exits[opposite] = loc_key
+                        all_exits[dest_key][opposite] = loc_key
+                        fixes_made += 1
+
+                elif return_dest.lower().replace('_door', '').replace('secret_', '') != opposite:
+                    # Return path exists but direction is wrong
+                    warnings.append(
+                        f"  {loc_key}→{direction}→{dest_key} but {dest_key}→{return_dest}→{loc_key} "
+                        f"(expected {dest_key}→{opposite}→{loc_key})"
+                    )
+                    # Fix the direction
+                    if dest_key in context.locations:
+                        old_exits = dict(context.locations[dest_key].exits or {})
+                        # Remove wrong direction, add correct one
+                        if return_dest in old_exits:
+                            del old_exits[return_dest]
+                        old_exits[opposite] = loc_key
+                        context.locations[dest_key].exits = old_exits
+                        all_exits[dest_key] = old_exits
+                        fixes_made += 1
+
+        # Update database records with fixed exits
+        if fixes_made > 0:
+            self._log(f"Found {len(warnings)} exit inconsistencies, fixed {fixes_made}")
+            for warning in warnings[:10]:  # Log first 10
+                self._log(warning)
+            if len(warnings) > 10:
+                self._log(f"  ... and {len(warnings) - 10} more")
+
+            # Update DB records
+            for loc_key, loc in context.locations.items():
+                result = await self.db.execute(
+                    select(AdventureLocation)
+                    .where(AdventureLocation.module_id == module_id)
+                    .where(AdventureLocation.location_key == loc_key)
+                )
+                db_loc = result.scalar_one_or_none()
+                if db_loc and loc.exits:
+                    db_loc.exits = loc.exits
+
+            await self.db.flush()
+            self._log("Exit reconciliation complete")
 
     def _build_batch_text(
         self,

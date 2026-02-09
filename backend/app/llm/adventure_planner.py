@@ -169,13 +169,22 @@ class AdventurePlanner:
     def _character_to_summary(self, character: Character) -> str:
         """Create a character summary for planning."""
         attrs = character.attributes or {}
+        # Handle equipment that may be strings or dicts
+        equipment = attrs.get('equipment', [])
+        equipment_names = []
+        for item in equipment:
+            if isinstance(item, str):
+                equipment_names.append(item)
+            elif isinstance(item, dict):
+                equipment_names.append(item.get('name', item.get('item', 'Unknown')))
+        equipment_str = ', '.join(equipment_names) or 'Standard gear'
         return f"""
 Name: {character.name}
 Class: {attrs.get('character_class', 'Unknown')}
 Level: {character.level}
 HP: {character.current_hp}/{character.max_hp}
 Alignment: {attrs.get('alignment', 'Neutral')}
-Equipment: {', '.join(attrs.get('equipment', [])) or 'Standard gear'}
+Equipment: {equipment_str}
 """
 
     def _parse_planning_response(self, response: str) -> Dict[str, Any]:

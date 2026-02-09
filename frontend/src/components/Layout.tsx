@@ -1,13 +1,24 @@
 import { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { Sword, Users, Map, BookOpen, Home, ScrollText, Settings, Eye, EyeOff } from 'lucide-react'
+import { Settings, Eye, EyeOff } from 'lucide-react'
+
+const AeyeLogo = ({ size = 24, color = "#b8a060" }: { size?: number; color?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 80 80" fill="none" style={{ flexShrink: 0 }}>
+    <path d="M4,40 Q40,8 76,40 Q40,72 4,40Z" stroke={color} strokeWidth="2.5" fill="none" />
+    <polygon points="40,22 56,31 56,49 40,58 24,49 24,31" stroke={color} strokeWidth="1.8" fill="none" />
+    <line x1="40" y1="22" x2="40" y2="58" stroke={color} strokeWidth="0.7" opacity="0.25" />
+    <line x1="24" y1="31" x2="56" y2="49" stroke={color} strokeWidth="0.7" opacity="0.25" />
+    <line x1="56" y1="31" x2="24" y2="49" stroke={color} strokeWidth="0.7" opacity="0.25" />
+    <circle cx="40" cy="40" r="5" fill={color} opacity="0.85" />
+    <circle cx="38" cy="38" r="1.5" fill="#0f0d0a" opacity="0.4" />
+  </svg>
+)
 
 const navItems = [
-  { path: '/', label: 'Home', icon: Home },
-  { path: '/characters', label: 'Characters', icon: Users },
-  { path: '/campaigns', label: 'Campaigns', icon: Map },
-  { path: '/journal', label: 'Journal', icon: ScrollText },
-  { path: '/sourcebooks', label: 'Sourcebooks', icon: BookOpen },
+  { path: '/campaigns', label: 'Adventures' },
+  { path: '/characters', label: 'Characters' },
+  { path: '/journal', label: 'Journal' },
+  { path: '/sourcebooks', label: 'Library' },
 ]
 
 export function Layout() {
@@ -15,60 +26,54 @@ export function Layout() {
   const [showSettings, setShowSettings] = useState(false)
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-dungeon-900">
       {/* Header */}
-      <header className="bg-dungeon-800 border-b border-dungeon-600">
-        <div className="container mx-auto px-4">
-          <div className="flex items-center justify-between h-16">
-            <Link to="/" className="flex items-center space-x-2">
-              <Sword className="w-8 h-8 text-parchment-500" />
-              <span className="font-display text-2xl text-parchment-100">
-                Old-School Dungeon Master
-              </span>
-            </Link>
+      <header className="bg-dungeon-800/90 border-b border-dungeon-700 sticky top-0 z-40">
+        <div className="flex items-center justify-center h-14 gap-6 px-6">
+          <Link to="/" className="flex items-center gap-2 font-display text-lg text-parchment-100 hover:text-parchment-200 transition-colors shrink-0">
+            <AeyeLogo size={24} />
+            <span>OSR<sup className="text-[#b8a060] text-[0.6em] ml-0.5">AI</sup></span>
+          </Link>
 
-            <div className="flex items-center space-x-2">
-              <nav className="flex space-x-1">
-                {navItems.map((item) => {
-                  const Icon = item.icon
-                  const isActive = location.pathname === item.path
-                  return (
-                    <Link
-                      key={item.path}
-                      to={item.path}
-                      className={`flex items-center space-x-2 px-4 py-2 rounded transition-colors ${
-                        isActive
-                          ? 'bg-parchment-600 text-dungeon-900'
-                          : 'text-parchment-300 hover:bg-dungeon-700 hover:text-parchment-100'
-                      }`}
-                    >
-                      <Icon className="w-5 h-5" />
-                      <span>{item.label}</span>
-                    </Link>
-                  )
-                })}
-              </nav>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="p-2 text-parchment-400 hover:text-parchment-100 hover:bg-dungeon-700 rounded transition-colors"
-                title="Settings"
-              >
-                <Settings className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
+          <div className="w-px h-5 bg-dungeon-600" />
+
+          <nav className="flex items-center gap-1">
+            {navItems.map((item) => {
+              const isActive = location.pathname === item.path ||
+                (item.path === '/campaigns' && location.pathname === '/')
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`nav-link ${isActive ? 'nav-link-active' : ''}`}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
+          </nav>
+
+          <div className="w-px h-5 bg-dungeon-600" />
+
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-2 text-parchment-500 hover:text-parchment-300 transition-colors"
+            title="Rules & Settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
       {/* Main content */}
-      <main className="flex-1 container mx-auto px-4 py-6">
+      <main className="flex-1">
         <Outlet />
       </main>
 
       {/* Footer */}
-      <footer className="bg-dungeon-800 border-t border-dungeon-600 py-4">
-        <div className="container mx-auto px-4 text-center text-parchment-400 text-sm">
-          OSR Classic Solo Adventures Platform
+      <footer className="py-6">
+        <div className="container mx-auto px-4 text-center text-parchment-600 text-sm italic">
+          Light a candle. Sharpen your pencil. The dungeon awaits.
         </div>
       </footer>
 
@@ -101,7 +106,6 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [claudeKey, setClaudeKey] = useState('')
   const [showOpenai, setShowOpenai] = useState(false)
   const [showClaude, setShowClaude] = useState(false)
-  const [saved, setSaved] = useState(false)
   const [openaiTest, setOpenaiTest] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [claudeTest, setClaudeTest] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [testError, setTestError] = useState('')
@@ -115,6 +119,9 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const [processingProvider, setProcessingProvider] = useState<'openai' | 'claude'>('openai')
   const [processingClaudeModel, setProcessingClaudeModel] = useState('claude-haiku-4-5-20250101')
   const [processingOpenaiModel, setProcessingOpenaiModel] = useState('gpt-4o-mini')
+
+  // DM Voice setting
+  const [dmStyle, setDmStyle] = useState('')
 
   const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -132,6 +139,9 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     setProcessingProvider((localStorage.getItem('processing_provider') as 'openai' | 'claude') || 'openai')
     setProcessingClaudeModel(localStorage.getItem('processing_claude_model') || 'claude-haiku-4-5-20250101')
     setProcessingOpenaiModel(localStorage.getItem('processing_openai_model') || 'gpt-4o-mini')
+
+    // DM Voice
+    setDmStyle(localStorage.getItem('dm_style') || '')
   }, [])
 
   // Save settings to localStorage and backend (used by test functions)
@@ -158,6 +168,9 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     localStorage.setItem('processing_claude_model', processingClaudeModel)
     localStorage.setItem('processing_openai_model', processingOpenaiModel)
 
+    // DM Voice
+    localStorage.setItem('dm_style', dmStyle)
+
     // Send to backend and wait for response
     try {
       await fetch(`${apiUrl}/api/v1/settings/keys`, {
@@ -172,6 +185,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           processing_provider: processingProvider,
           processing_claude_model: processingClaudeModel,
           processing_openai_model: processingOpenaiModel,
+          dm_style: dmStyle,
         }),
       })
     } catch (e) {
@@ -258,7 +272,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={testOpenai}
                 disabled={!openaiKey || openaiTest === 'testing'}
                 className={`px-3 py-2 rounded text-sm transition-colors ${
-                  openaiTest === 'success' ? 'bg-green-700 text-white' :
+                  openaiTest === 'success' ? 'bg-parchment-600 text-dungeon-900' :
                   openaiTest === 'error' ? 'bg-red-700 text-white' :
                   'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 } disabled:opacity-50`}
@@ -293,7 +307,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={testClaude}
                 disabled={!claudeKey || claudeTest === 'testing'}
                 className={`px-3 py-2 rounded text-sm transition-colors ${
-                  claudeTest === 'success' ? 'bg-green-700 text-white' :
+                  claudeTest === 'success' ? 'bg-parchment-600 text-dungeon-900' :
                   claudeTest === 'error' ? 'bg-red-700 text-white' :
                   'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 } disabled:opacity-50`}
@@ -321,7 +335,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={() => setGmProvider('claude')}
                 className={`flex-1 px-3 py-2 rounded text-sm transition-colors ${
                   gmProvider === 'claude'
-                    ? 'bg-purple-700 text-white'
+                    ? 'bg-parchment-600 text-dungeon-900'
                     : 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 }`}
               >
@@ -331,7 +345,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={() => setGmProvider('openai')}
                 className={`flex-1 px-3 py-2 rounded text-sm transition-colors ${
                   gmProvider === 'openai'
-                    ? 'bg-green-700 text-white'
+                    ? 'bg-parchment-600 text-dungeon-900'
                     : 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 }`}
               >
@@ -367,7 +381,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={() => setProcessingProvider('claude')}
                 className={`flex-1 px-3 py-2 rounded text-sm transition-colors ${
                   processingProvider === 'claude'
-                    ? 'bg-purple-700 text-white'
+                    ? 'bg-parchment-600 text-dungeon-900'
                     : 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 }`}
               >
@@ -377,7 +391,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                 onClick={() => setProcessingProvider('openai')}
                 className={`flex-1 px-3 py-2 rounded text-sm transition-colors ${
                   processingProvider === 'openai'
-                    ? 'bg-green-700 text-white'
+                    ? 'bg-parchment-600 text-dungeon-900'
                     : 'bg-dungeon-700 text-parchment-300 hover:bg-dungeon-600'
                 }`}
               >
@@ -398,19 +412,38 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+
+          {/* Divider */}
+          <div className="border-t border-dungeon-600 my-4" />
+
+          {/* DM Voice Section */}
+          <div className="space-y-3">
+            <h3 className="text-parchment-200 font-medium">DM Narrative Voice</h3>
+            <p className="text-parchment-500 text-xs">Sets the default narration style for new campaigns</p>
+            <select
+              value={dmStyle}
+              onChange={(e) => setDmStyle(e.target.value)}
+              className="w-full bg-dungeon-900 border border-dungeon-600 text-parchment-200 rounded px-3 py-2"
+            >
+              <option value="">Default</option>
+              <option value="gary_gygax">Gary Gygax — Rich, arcane vocabulary with elaborate prose</option>
+              <option value="robert_e_howard">Robert E. Howard — Muscular, visceral, action-driven</option>
+              <option value="fritz_leiber">Fritz Leiber — Witty, urbane, sardonic rogues and cities</option>
+              <option value="dnd_show">D&D TV Show DM — Mysterious riddles and cryptic hints</option>
+            </select>
+          </div>
         </div>
 
-        <div className="flex justify-end gap-2 mt-6">
-          {saved && <span className="text-green-400 text-sm self-center mr-2">Saved!</span>}
+        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-dungeon-700">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-parchment-300 hover:text-parchment-100 transition-colors"
+            className="btn btn-ghost"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="px-4 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded transition-colors"
+            className="btn btn-primary"
           >
             Save
           </button>

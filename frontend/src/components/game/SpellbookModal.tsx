@@ -172,7 +172,7 @@ export function SpellbookModal({ characterId, onClose }: Props) {
                   key={level}
                   className={`px-3 py-1 rounded text-sm ${
                     used === max
-                      ? 'bg-purple-900/50 text-purple-300'
+                      ? 'bg-amber-900/50 text-amber-300'
                       : used > 0
                       ? 'bg-dungeon-600 text-parchment-300'
                       : 'bg-dungeon-800 text-parchment-500'
@@ -202,7 +202,7 @@ export function SpellbookModal({ characterId, onClose }: Props) {
                     <span
                       className={`text-xs ${
                         usedSlots >= maxSlots
-                          ? 'text-purple-400'
+                          ? 'text-amber-400'
                           : 'text-parchment-500'
                       }`}
                     >
@@ -220,7 +220,7 @@ export function SpellbookModal({ characterId, onClose }: Props) {
                           key={spell.code}
                           className={`flex items-center justify-between p-2 rounded transition-colors ${
                             count > 0
-                              ? 'bg-purple-900/30 border border-purple-800/50'
+                              ? 'bg-amber-900/30 border border-amber-800/50'
                               : 'bg-dungeon-700 hover:bg-dungeon-600'
                           }`}
                         >
@@ -232,7 +232,7 @@ export function SpellbookModal({ characterId, onClose }: Props) {
                               {spell.name}
                             </span>
                             {spell.reversible && (
-                              <span className="text-xs text-purple-400 ml-2">
+                              <span className="text-xs text-amber-400 ml-2">
                                 (R)
                               </span>
                             )}
@@ -325,7 +325,7 @@ export function SpellbookModal({ characterId, onClose }: Props) {
             </div>
             <p className="text-xs text-parchment-400">{viewingSpell.description}</p>
             {viewingSpell.reversible && (
-              <p className="text-xs text-purple-400 mt-1">
+              <p className="text-xs text-amber-400 mt-1">
                 Can be reversed as: {viewingSpell.reversed_name}
               </p>
             )}

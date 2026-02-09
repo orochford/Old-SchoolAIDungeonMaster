@@ -51,6 +51,26 @@ class LocationDetails:
 
 
 @dataclass
+class MapPosition:
+    """Position of a room on a map image."""
+    location_key: str
+    map_page: int = 1
+    x: float = 0.5  # 0-1 scale, left-to-right
+    y: float = 0.5  # 0-1 scale, top-to-bottom
+    confidence: float = 0.0
+    found_on_map: bool = False
+
+
+@dataclass
+class MapAnalysis:
+    """Results of map spatial analysis."""
+    positions: Dict[str, 'MapPosition'] = field(default_factory=dict)
+    adjacencies: Dict[str, Dict[str, str]] = field(default_factory=dict)  # {from_key: {to_key: direction}}
+    unmapped_rooms: List[str] = field(default_factory=list)
+    discovered_corridors: List[Dict[str, Any]] = field(default_factory=list)  # Corridors found via vision AI
+
+
+@dataclass
 class Creature:
     """Creature stat block."""
     name: str
@@ -205,6 +225,9 @@ class ExtractionContext:
     connections: List[LocationConnection] = field(default_factory=list)
     critical_path: List[str] = field(default_factory=list)  # List of location keys
     recommended_path: List[str] = field(default_factory=list)
+
+    # Pass 2.5 outputs
+    map_analysis: Optional[MapAnalysis] = None
 
     # Verification metadata
     verification_issues: List[str] = field(default_factory=list)

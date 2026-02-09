@@ -9,6 +9,7 @@ import { SessionPage } from './pages/SessionPage'
 import { PlayPage } from './pages/PlayPage'
 import { SourcebooksPage } from './pages/SourcebooksPage'
 import { JournalPage } from './pages/JournalPage'
+import { GraphMapPage } from './pages/GraphMapPage'
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
         <Route path="session/:sessionId" element={<SessionPage />} />
         <Route path="sourcebooks" element={<SourcebooksPage />} />
         <Route path="journal" element={<JournalPage />} />
+        <Route path="adventures/:moduleId/graph" element={<GraphMapPage />} />
       </Route>
     </Routes>
   )

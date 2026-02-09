@@ -170,3 +170,46 @@ class ModuleValidationResponse(BaseModel):
     extracted_fixed_encounters: int
     issues: List[str] = []
     preprocessing_sections: Dict[str, Any] = {}
+
+
+class GraphVisualizationNode(BaseModel):
+    """A node in the graph visualization."""
+    id: str
+    key: str
+    name: str
+    dungeon_level: int = 1
+    is_empty: bool = False
+    has_creatures: bool = False
+    has_items: bool = False
+    has_traps: bool = False
+    has_secrets: bool = False
+    has_npcs: bool = False
+    is_entrance: bool = False
+    creature_summary: str = ""
+    encounter_hd_total: float = 0.0
+
+
+class GraphVisualizationEdge(BaseModel):
+    """An edge in the graph visualization."""
+    from_id: str
+    to_id: str
+    direction: str = ""
+    is_secret: bool = False
+    is_one_way: bool = False
+
+
+class GraphValidationReportResponse(BaseModel):
+    """Graph completeness validation report."""
+    dangling_exits: List[Dict[str, Any]] = []
+    orphan_locations: List[Dict[str, Any]] = []
+    total_locations: int = 0
+    total_connections: int = 0
+
+
+class GraphVisualizationResponse(BaseModel):
+    """Response for graph visualization endpoint."""
+    module_id: str
+    module_title: str
+    nodes: List[GraphVisualizationNode] = []
+    edges: List[GraphVisualizationEdge] = []
+    validation_report: Optional[GraphValidationReportResponse] = None

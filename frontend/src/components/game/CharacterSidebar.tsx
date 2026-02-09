@@ -146,37 +146,47 @@ export function CharacterSidebar({ character, onAttackRoll, onAbilityCheck, onDr
       return attrs.equipped_items
     }
 
-    // Convert legacy string array to EquippedItem format
+    // Convert legacy string array or new object format to EquippedItem format
     if (attrs.equipment && attrs.equipment.length > 0) {
-      return attrs.equipment.map((itemName) => {
-        // Try to find item in database by name (case insensitive)
-        const dbItem = BX_EQUIPMENT.find(
-          (e) => e.name.toLowerCase() === itemName.toLowerCase() ||
-                 e.id === itemName.toLowerCase().replace(/\s+/g, '_')
-        )
+      return attrs.equipment
+        .filter((item) => {
+          if (typeof item === 'string') return item.length > 0
+          if (typeof item === 'object' && item !== null) return item.name && item.name.length > 0
+          return false
+        })
+        .map((item) => {
+          // Extract name from string or object
+          const itemName = typeof item === 'string' ? item : item.name
+          const quantity = typeof item === 'object' ? (item.quantity || 1) : 1
 
-        if (dbItem) {
-          return {
-            id: dbItem.id,
-            name: dbItem.name,
-            category: dbItem.category,
-            equipped: dbItem.category === 'weapon' || dbItem.category === 'armor', // Auto-equip weapons and armor
-            damage: dbItem.damage,
-            ac: dbItem.ac,
-            acBonus: dbItem.acBonus,
-            weight: dbItem.weight,
+          // Try to find item in database by name (case insensitive)
+          const dbItem = BX_EQUIPMENT.find(
+            (e) => e.name.toLowerCase() === itemName.toLowerCase() ||
+                   e.id === itemName.toLowerCase().replace(/\s+/g, '_')
+          )
+
+          if (dbItem) {
+            return {
+              id: dbItem.id,
+              name: quantity > 1 ? `${dbItem.name} x${quantity}` : dbItem.name,
+              category: dbItem.category,
+              equipped: dbItem.category === 'weapon' || dbItem.category === 'armor', // Auto-equip weapons and armor
+              damage: dbItem.damage,
+              ac: dbItem.ac,
+              acBonus: dbItem.acBonus,
+              weight: dbItem.weight * quantity,
+            }
           }
-        }
 
-        // Unknown item - return as gear
-        return {
-          id: itemName.toLowerCase().replace(/\s+/g, '_'),
-          name: itemName,
-          category: 'gear' as const,
-          equipped: false,
-          weight: 10, // Default weight
-        }
-      })
+          // Unknown item - return as gear
+          return {
+            id: itemName.toLowerCase().replace(/\s+/g, '_'),
+            name: quantity > 1 ? `${itemName} x${quantity}` : itemName,
+            category: 'gear' as const,
+            equipped: false,
+            weight: 10 * quantity, // Default weight
+          }
+        })
     }
 
     return []

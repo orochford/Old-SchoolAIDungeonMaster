@@ -66,6 +66,38 @@ export function getEquipmentById(id: string): BXEquipment | undefined {
   return BX_EQUIPMENT.find((e) => e.id === id)
 }
 
+/**
+ * Get display name for an item. Looks up from equipment list first,
+ * then falls back to formatting the ID nicely.
+ * e.g., "rope_50ft" -> "Rope (50')" or "unknown_item" -> "Unknown Item"
+ */
+export function getItemDisplayName(itemNameOrId: string): string {
+  // First try to find in equipment list
+  const equipment = getEquipmentById(itemNameOrId)
+  if (equipment) {
+    return equipment.name
+  }
+
+  // Check if this is already a display name (contains spaces or parentheses)
+  if (itemNameOrId.includes(' ') || itemNameOrId.includes('(')) {
+    return itemNameOrId
+  }
+
+  // Format the ID: replace underscores, handle common patterns
+  let name = itemNameOrId
+    .replace(/_(\d+)(ft|lb|gp)?$/i, (_, num, unit) => {
+      // Handle patterns like "rope_50ft" -> "Rope (50')"
+      if (unit?.toLowerCase() === 'ft') return ` (${num}')`
+      if (unit?.toLowerCase() === 'lb') return ` (${num} lb)`
+      if (unit?.toLowerCase() === 'gp') return ` (${num} gp)`
+      return ` (${num})`
+    })
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase()) // Title case
+
+  return name
+}
+
 export function getEquipmentByCategory(category: BXEquipment['category']): BXEquipment[] {
   return BX_EQUIPMENT.filter((e) => e.category === category)
 }

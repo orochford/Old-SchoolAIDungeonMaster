@@ -236,7 +236,7 @@ function AchievementsSection({ characterId }: { characterId: string }) {
     common: 'text-parchment-300',
     uncommon: 'text-green-400',
     rare: 'text-blue-400',
-    legendary: 'text-purple-400',
+    legendary: 'text-amber-400',
   }
 
   if (isLoading) {

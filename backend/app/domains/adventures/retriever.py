@@ -11,6 +11,7 @@ from app.domains.adventures.models import (
     AdventureModule, AdventureLocation, AdventureNPC,
     AdventureEncounter, AdventureItem, EncounterType, ParsingStatus,
 )
+from app.domains.sourcebooks.models import ExtractedImage
 from app.rag.embeddings import EmbeddingService
 
 
@@ -29,6 +30,104 @@ class AdventureDataRetriever:
             .where(AdventureModule.parsing_status == ParsingStatus.COMPLETED)
         )
         return result.scalar_one_or_none()
+
+    async def get_module_maps(self, document_id: UUID) -> List[Dict[str, Any]]:
+        """Get map images for a module.
+
+        Args:
+            document_id: The PDF document ID
+
+        Returns:
+            List of map image data with paths, titles, and descriptions
+        """
+        result = await self.db.execute(
+            select(ExtractedImage)
+            .where(ExtractedImage.document_id == document_id)
+            .where(ExtractedImage.image_type == "map")
+            .order_by(ExtractedImage.page_number)
+        )
+        images = list(result.scalars().all())
+
+        return [
+            {
+                "id": str(img.id),
+                "path": img.image_path,
+                "title": img.title or f"Map (page {img.page_number})",
+                "description": img.description,
+                "page_number": img.page_number,
+                "width": img.width,
+                "height": img.height,
+            }
+            for img in images
+        ]
+
+    async def get_adjacent_locations(
+        self,
+        module_id: UUID,
+        location_key: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get brief info about locations adjacent to the current one.
+
+        Args:
+            module_id: Adventure module UUID
+            location_key: Current location key
+
+        Returns:
+            Dictionary mapping direction -> location brief info
+        """
+        # First get the current location to find its exits
+        result = await self.db.execute(
+            select(AdventureLocation)
+            .where(AdventureLocation.module_id == module_id)
+            .where(AdventureLocation.location_key == location_key)
+        )
+        current_location = result.scalar_one_or_none()
+
+        if not current_location or not current_location.exits:
+            return {}
+
+        adjacent = {}
+        exits = current_location.exits if isinstance(current_location.exits, dict) else {}
+
+        for direction, dest_info in exits.items():
+            # Extract location key from destination info
+            # dest_info might be "Room 2 (Kitchen)" or just "2" or "Kitchen"
+            import re
+            # Try to find a numeric key first
+            key_match = re.search(r'\b(\d+[a-z]?)\b', str(dest_info))
+            if key_match:
+                dest_key = key_match.group(1)
+
+                # Look up the adjacent location
+                result = await self.db.execute(
+                    select(AdventureLocation)
+                    .where(AdventureLocation.module_id == module_id)
+                    .where(AdventureLocation.location_key == dest_key)
+                )
+                adj_location = result.scalar_one_or_none()
+
+                if adj_location:
+                    adjacent[direction] = {
+                        "key": adj_location.location_key,
+                        "name": adj_location.name,
+                        "brief": adj_location.dm_description[:150] + "..." if adj_location.dm_description and len(adj_location.dm_description) > 150 else adj_location.dm_description,
+                    }
+                else:
+                    # Couldn't find location, use the raw destination info
+                    adjacent[direction] = {
+                        "key": dest_key,
+                        "name": dest_info,
+                        "brief": None,
+                    }
+            else:
+                # No numeric key found, just record the raw info
+                adjacent[direction] = {
+                    "key": None,
+                    "name": dest_info,
+                    "brief": None,
+                }
+
+        return adjacent
 
     async def get_location_context(
         self,
@@ -301,6 +400,7 @@ class AdventureDataRetriever:
             "key": location.location_key,
             "name": location.name,
             "dm_description": location.dm_description,
+            "source_text": location.source_text,
             "read_aloud": location.read_aloud_text,
             "features": location.features,
             "exits": location.exits if isinstance(location.exits, dict) else {},

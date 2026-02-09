@@ -174,11 +174,18 @@ export function BXCharacterSheet({ character }: Props) {
             Equipment
           </h2>
           <div className="flex flex-wrap gap-2">
-            {attrs.equipment.map((item, i) => (
-              <span key={i} className="bg-parchment-200 px-2 py-1 rounded text-sm">
-                {item}
-              </span>
-            ))}
+            {attrs.equipment.map((item, i) => {
+              // Handle both string and object formats
+              const itemName = typeof item === 'string' ? item : item.name
+              const quantity = typeof item === 'object' && item.quantity && item.quantity > 1
+                ? ` x${item.quantity}`
+                : ''
+              return (
+                <span key={i} className="bg-parchment-200 px-2 py-1 rounded text-sm">
+                  {itemName}{quantity}
+                </span>
+              )
+            })}
           </div>
         </section>
       )}

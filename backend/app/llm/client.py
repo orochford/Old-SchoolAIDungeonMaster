@@ -2,12 +2,61 @@
 
 from typing import AsyncGenerator, List, Dict, Any, Optional
 import logging
+import base64
+import os
 import anthropic
 from anthropic import AsyncAnthropic
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def load_image_as_base64(image_path: str) -> Optional[Dict[str, Any]]:
+    """Load an image file and return it as a base64-encoded content block.
+
+    Args:
+        image_path: Path to the image file
+
+    Returns:
+        Image content block for Claude API, or None if loading fails
+    """
+    if not image_path or not os.path.exists(image_path):
+        logger.warning(f"Image not found: {image_path}")
+        return None
+
+    # Determine media type from extension
+    ext = os.path.splitext(image_path)[1].lower()
+    media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+    media_type = media_types.get(ext, "image/png")
+
+    try:
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        # Check size (Claude max is 20MB, recommend under 5MB)
+        size_mb = len(image_data) * 3 / 4 / 1024 / 1024  # Approximate decoded size
+        if size_mb > 20:
+            logger.warning(f"Image too large ({size_mb:.1f}MB): {image_path}")
+            return None
+
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": image_data,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to load image {image_path}: {e}")
+        return None
 
 
 class ClaudeClient:
@@ -109,14 +158,32 @@ class ClaudeClient:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if isinstance(content, list):
-                # Handle complex content (tool results, etc.)
-                text_parts = []
+                # Handle complex content (tool results, images, etc.)
+                openai_content = []
                 for block in content:
                     if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
+                        openai_content.append({"type": "text", "text": block.get("text", "")})
+                    elif block.get("type") == "image":
+                        # Convert Claude image format to OpenAI format
+                        source = block.get("source", {})
+                        if source.get("type") == "base64":
+                            media_type = source.get("media_type", "image/png")
+                            data = source.get("data", "")
+                            openai_content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{data}"
+                                }
+                            })
                     elif block.get("type") == "tool_result":
-                        text_parts.append(f"Tool result: {block.get('content', '')}")
-                content = "\n".join(text_parts) if text_parts else str(content)
+                        openai_content.append({"type": "text", "text": f"Tool result: {block.get('content', '')}"})
+                # If we only have text, flatten to string for simpler messages
+                if len(openai_content) == 1 and openai_content[0].get("type") == "text":
+                    content = openai_content[0]["text"]
+                elif openai_content:
+                    content = openai_content
+                else:
+                    content = str(content)
             openai_messages.append({"role": role, "content": content})
 
         kwargs = {
@@ -287,13 +354,32 @@ class ClaudeClient:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if isinstance(content, list):
-                text_parts = []
+                # Handle complex content (tool results, images, etc.)
+                openai_content = []
                 for block in content:
                     if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
+                        openai_content.append({"type": "text", "text": block.get("text", "")})
+                    elif block.get("type") == "image":
+                        # Convert Claude image format to OpenAI format
+                        source = block.get("source", {})
+                        if source.get("type") == "base64":
+                            media_type = source.get("media_type", "image/png")
+                            data = source.get("data", "")
+                            openai_content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{data}"
+                                }
+                            })
                     elif block.get("type") == "tool_result":
-                        text_parts.append(f"Tool result: {block.get('content', '')}")
-                content = "\n".join(text_parts) if text_parts else str(content)
+                        openai_content.append({"type": "text", "text": f"Tool result: {block.get('content', '')}"})
+                # If we only have text, flatten to string for simpler messages
+                if len(openai_content) == 1 and openai_content[0].get("type") == "text":
+                    content = openai_content[0]["text"]
+                elif openai_content:
+                    content = openai_content
+                else:
+                    content = str(content)
             openai_messages.append({"role": role, "content": content})
 
         kwargs = {

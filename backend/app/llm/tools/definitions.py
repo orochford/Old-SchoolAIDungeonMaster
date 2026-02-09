@@ -401,6 +401,52 @@ ADVENTURE_TOOLS = [
             "required": ["location"],
         },
     },
+    {
+        "name": "add_item",
+        "description": "Add an item to the character's inventory. Use when player picks up, receives, or acquires items. For gold/coins, this adds to the character's gold total. For other items, adds to equipment list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "item_name": {
+                    "type": "string",
+                    "description": "Name of the item (e.g., 'Longsword', 'Healing Potion', 'Gold Pieces')",
+                },
+                "quantity": {
+                    "type": "integer",
+                    "description": "How many of the item to add (default 1)",
+                    "default": 1,
+                },
+                "value_gp": {
+                    "type": "number",
+                    "description": "Value in gold pieces (for treasure). For gold/coins, this is the amount to add.",
+                },
+            },
+            "required": ["item_name"],
+        },
+    },
+    {
+        "name": "update_subarea_position",
+        "description": "Update the player's position WITHIN a location. Use this for internal movement (progressing through a corridor, reaching a new area within a room). CRITICAL: Many locations have sub-areas (alcoves, steps, intersections, etc.) with different features and triggers. Track the player's progression through these sub-areas to reveal content in the correct order.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "subarea_id": {
+                    "type": "string",
+                    "description": "ID of the sub-area the player has reached (e.g., '1_alcoves_1', '1_intersection')",
+                },
+                "subarea_name": {
+                    "type": "string",
+                    "description": "Human-readable name of the sub-area (e.g., 'First Alcoves', 'Top of Steps')",
+                },
+                "triggered_content": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "IDs of triggers or features that activate upon reaching this sub-area",
+                },
+            },
+            "required": ["subarea_id", "subarea_name"],
+        },
+    },
 ]
 
 # Journal tools for session continuity and world tracking
@@ -554,6 +600,89 @@ CALENDAR_TOOLS = [
 ]
 
 # Map and dungeon exploration tools
+# Encounter management tools (persistent combat state)
+ENCOUNTER_TOOLS = [
+    {
+        "name": "start_encounter",
+        "description": "Start a tracked combat encounter. MANDATORY before ANY combat begins. If fighting creatures from the current module location, you can omit enemies to auto-populate from the module's encounter data. For wandering monsters or ad-hoc fights, provide the enemies list. This creates persistent DB records for all combatants.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "encounter_name": {
+                    "type": "string",
+                    "description": "Name for this encounter (e.g., 'Goblin Ambush', 'Wandering Skeleton Patrol')",
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["fixed", "wandering", "custom"],
+                    "description": "Source of enemies: 'fixed' = auto-populate from current location's fixed encounter, 'wandering' = auto-populate from wandering monster table (provide wandering_roll), 'custom' = use provided enemies list. Default: 'fixed' if no enemies provided, 'custom' if enemies provided.",
+                },
+                "wandering_roll": {
+                    "type": "integer",
+                    "description": "The die roll result for wandering monster table lookup (only used when source='wandering')",
+                },
+                "enemies": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Enemy name (e.g., 'Orc 1', 'Goblin Leader')",
+                            },
+                            "hd": {
+                                "type": "integer",
+                                "description": "Hit Dice",
+                            },
+                            "hp": {
+                                "type": "integer",
+                                "description": "Hit points (auto-rolled from HD if omitted)",
+                            },
+                            "ac": {
+                                "type": "integer",
+                                "description": "Armor Class (descending, B/X style)",
+                            },
+                            "thac0": {
+                                "type": "integer",
+                                "description": "To Hit Armor Class 0",
+                            },
+                            "damage": {
+                                "type": "string",
+                                "description": "Damage notation (e.g., '1d6', '1d8+1')",
+                            },
+                            "morale": {
+                                "type": "integer",
+                                "description": "Morale score (2-12)",
+                            },
+                            "xp_value": {
+                                "type": "integer",
+                                "description": "XP awarded for defeating this enemy",
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                    "description": "List of enemies. Omit to auto-populate from module encounter data.",
+                },
+            },
+        },
+    },
+    {
+        "name": "end_encounter",
+        "description": "End the current combat encounter. MANDATORY when combat concludes for any reason. Records outcome and awards XP.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "outcome": {
+                    "type": "string",
+                    "enum": ["victory", "defeat", "fled"],
+                    "description": "How combat ended: victory (enemies defeated/fled), defeat (hero fell), fled (hero retreated)",
+                },
+            },
+            "required": ["outcome"],
+        },
+    },
+]
+
 MAP_TOOLS = [
     {
         "name": "display_map",
@@ -664,6 +793,35 @@ MAP_TOOLS = [
                 },
             },
             "required": ["name"],
+        },
+    },
+]
+
+# Tools for displaying atmospheric images to the player
+IMAGE_TOOLS = [
+    {
+        "name": "show_illustration",
+        "description": "Display an illustration or atmospheric image to the player. Use this to enhance key moments: entering a dramatic location, encountering a notable NPC or monster, discovering treasure, or setting a scene. Only use for significant moments - don't overuse.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "image_type": {
+                    "type": "string",
+                    "enum": ["location", "monster", "npc", "treasure", "scene", "map"],
+                    "description": "What type of image to show",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of what the image should depict (e.g., 'the ancient stone archway', 'the goblin chief'). Used to find matching extracted images or generate new ones.",
+                },
+                "mood": {
+                    "type": "string",
+                    "enum": ["dramatic", "mysterious", "peaceful", "dangerous", "wondrous", "dark"],
+                    "description": "The mood/atmosphere of the scene",
+                    "default": "dramatic",
+                },
+            },
+            "required": ["image_type", "description"],
         },
     },
 ]

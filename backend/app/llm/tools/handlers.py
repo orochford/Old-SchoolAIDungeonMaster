@@ -69,6 +69,16 @@ class ToolHandler:
         "Anger", "Information", "Extravagance", "A Plot", "Expectations",
     ]
 
+    @staticmethod
+    def _safe_int(value, default):
+        """Convert value to int, treating non-numeric strings like 'N/A' as default."""
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
     def __init__(self, session: AsyncSession):
         self.db = session
         self.retriever = RAGRetriever(session)
@@ -98,6 +108,8 @@ class ToolHandler:
             "update_plot_thread": self._update_plot_thread,
             "record_npc_encounter": self._record_npc_encounter,
             "update_adventure_location": self._update_adventure_location,
+            "update_subarea_position": self._update_subarea_position,
+            "add_item": self._add_item,
             # Journal tools
             "query_journal": self._query_journal,
             "record_discovery": self._record_discovery,
@@ -117,6 +129,11 @@ class ToolHandler:
             "update_map_position": self._update_map_position,
             "add_map_marker": self._add_map_marker,
             "create_map": self._create_map,
+            # Encounter tools
+            "start_encounter": self._start_encounter,
+            "end_encounter": self._end_encounter,
+            # Image tools
+            "show_illustration": self._show_illustration,
         }
 
         handler = handlers.get(tool_name)
@@ -212,7 +229,13 @@ class ToolHandler:
             }
 
         if aspect in ["inventory", "all"]:
-            # TODO: Fetch inventory from database
+            # TODO: Fetch inventory from database instead of character.attributes
+            # Currently items are stored in character.attributes["equipment"] as JSON
+            # Should use a proper Inventory table for:
+            # - Better querying and filtering
+            # - Item weight/encumbrance tracking
+            # - Item condition/charges tracking
+            # - Proper foreign keys to item definitions
             result["inventory"] = character.attributes.get("equipment", [])
 
         if aspect in ["spells", "all"]:
@@ -307,6 +330,12 @@ class ToolHandler:
             else:
                 result["status"] = "healed"
 
+            # Sync player CombatParticipant if encounter active
+            if session.active_combat_id:
+                await self._sync_participant_hp(
+                    session.active_combat_id, character.name, new_hp
+                )
+
             return result
         else:
             # NPC/monster damage - track in game state
@@ -321,6 +350,13 @@ class ToolHandler:
             session.game_state["npcs"] = npcs
 
             await self.db.flush()
+
+            # Sync NPC CombatParticipant if encounter active
+            if session.active_combat_id:
+                await self._sync_participant_hp(
+                    session.active_combat_id, target, npc["hp"],
+                    mark_defeated=(npc["hp"] <= 0),
+                )
 
             return {
                 "target": target,
@@ -345,7 +381,7 @@ class ToolHandler:
         roll = random.randint(1, 6) + random.randint(1, 6)
         passed = roll <= morale_score
 
-        return {
+        result = {
             "creature": creature_name,
             "morale_score": morale_score,
             "roll": roll,
@@ -354,6 +390,14 @@ class ToolHandler:
             "result": "holds firm" if passed else "breaks and flees",
             "visible": False,  # DM mechanic - hide by default
         }
+
+        # Sync morale_broken to CombatParticipant if encounter active
+        if not passed and session.active_combat_id:
+            await self._sync_participant_morale_broken(
+                session.active_combat_id, creature_name
+            )
+
+        return result
 
     async def _roll_reaction(
         self,
@@ -767,6 +811,15 @@ class ToolHandler:
             visited.append(current_key)
             adventure_state["visited_locations"] = visited
 
+        # Reset sub-area tracking when entering a new location
+        # The DM will update current_subarea as player progresses through the location
+        if current_key != adventure_state.get("previous_location_key"):
+            adventure_state["previous_location_key"] = current_key
+            adventure_state["current_subarea"] = None  # Will be set by DM based on entry point
+            adventure_state["current_subarea_name"] = None
+            adventure_state["subareas_visited"] = []  # Reset for new location
+            adventure_state["triggered_content"] = []  # Reset triggered content for new location
+
         # Save to session
         session.adventure_state = adventure_state
 
@@ -816,7 +869,218 @@ class ToolHandler:
             response["matched_module_location"] = False
             response["warning"] = "Location not found in adventure module - verify this is a valid module location"
 
+        # Generate updated map data for frontend
+        try:
+            from app.domains.maps.map_service import MapService
+            from app.domains.adventures.retriever import AdventureDataRetriever
+
+            if session.campaign_id:
+                campaign_result = await self.db.execute(
+                    select(Campaign).where(Campaign.id == session.campaign_id)
+                )
+                campaign = campaign_result.scalar_one_or_none()
+
+                if campaign and campaign.adventure_document_id:
+                    retriever = AdventureDataRetriever(self.db)
+                    module = await retriever.get_module_for_document(campaign.adventure_document_id)
+
+                    if module:
+                        locations = await retriever.get_all_locations(module.id)
+                        if locations:
+                            # Build full location data with exits
+                            full_locations = []
+                            for loc in locations[:20]:
+                                loc_context = await retriever.get_location_context(module.id, loc['key'])
+                                if loc_context and loc_context.get('location'):
+                                    full_locations.append({
+                                        'location_key': loc['key'],
+                                        'name': loc['name'],
+                                        'exits': loc_context['location'].get('exits', {}),
+                                    })
+
+                            # Get current state for map generation
+                            current_key = adventure_state.get('current_location_key')
+                            explored_keys = adventure_state.get('visited_locations', [])
+
+                            # Generate updated map
+                            map_service = MapService(self.db)
+                            map_result = map_service.generate_connection_map(
+                                locations=full_locations,
+                                current_location_key=current_key,
+                                explored_keys=explored_keys,
+                            )
+
+                            # Include map data in response
+                            response["map_update"] = {
+                                "map_id": "connection_map",
+                                "map_name": f"{module.title} - Area Map",
+                                "rendered_map": map_result["rendered_map"],
+                                "width": map_result["width"],
+                                "height": map_result["height"],
+                                "player_position": map_result["player_position"],
+                                "markers": map_result["markers"],
+                                "exploration_progress": f"{len(explored_keys)}/{len(full_locations)} areas explored",
+                            }
+        except Exception as map_error:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to generate map update: {map_error}")
+
         return response
+
+    async def _update_subarea_position(
+        self,
+        input: Dict[str, Any],
+        character: Character,
+        session: Session,
+    ) -> Dict[str, Any]:
+        """Update the player's position within a location (sub-area tracking).
+
+        This enables progressive reveal - the DM only describes content
+        the player has actually reached within a larger location.
+        """
+        subarea_id = input.get("subarea_id", "")
+        subarea_name = input.get("subarea_name", "")
+        triggered_content = input.get("triggered_content", [])
+
+        if not subarea_id:
+            return {"error": "subarea_id is required", "visible": False}
+
+        # Get adventure state
+        adventure_state = session.adventure_state or {}
+        previous_subarea = adventure_state.get("current_subarea")
+
+        # Update current sub-area
+        adventure_state["current_subarea"] = subarea_id
+        adventure_state["current_subarea_name"] = subarea_name
+
+        # Track visited sub-areas for this location
+        subareas_visited = adventure_state.get("subareas_visited", [])
+        if subarea_id not in subareas_visited:
+            subareas_visited.append(subarea_id)
+            adventure_state["subareas_visited"] = subareas_visited
+
+        # Track triggered content (triggers, features revealed)
+        triggered_this_location = adventure_state.get("triggered_content", [])
+        for content_id in triggered_content:
+            if content_id not in triggered_this_location:
+                triggered_this_location.append(content_id)
+        adventure_state["triggered_content"] = triggered_this_location
+
+        # Save to session
+        session.adventure_state = adventure_state
+        await self.db.flush()
+
+        return {
+            "success": True,
+            "subarea_id": subarea_id,
+            "subarea_name": subarea_name,
+            "previous_subarea": previous_subarea,
+            "subareas_visited": subareas_visited,
+            "triggered_content": triggered_content,
+            "visible": False,  # Internal state tracking, not shown to player
+        }
+
+    async def _add_item(
+        self,
+        input: Dict[str, Any],
+        character: Character,
+        session: Session,
+    ) -> Dict[str, Any]:
+        """Add an item to the character's inventory.
+
+        TODO: Items are not automatically added when found during exploration.
+        The LLM must explicitly call this tool when the player takes items.
+        Consider:
+        - Auto-prompting player to take discovered items
+        - Tracking found-but-not-taken items in session state
+        - Adding a "loot all" convenience tool
+        - Validating items against module's item definitions
+        """
+        item_name = input.get("item_name", "")
+        quantity = input.get("quantity", 1)
+        value_gp = input.get("value_gp", 0)
+
+        if not item_name:
+            return {"error": "Item name is required", "visible": False}
+
+        # Ensure attributes dict exists
+        if not character.attributes:
+            character.attributes = {}
+
+        # Check if this is gold/coins - add to gold total
+        item_lower = item_name.lower()
+        is_gold = any(term in item_lower for term in ["gold", "gp", "coin", "coins", "gold piece", "gold pieces"])
+
+        if is_gold:
+            # Add to character's gold in attributes (not a separate column)
+            # Use value_gp if provided, otherwise use quantity as the gold amount
+            gold_amount = int(value_gp) if value_gp else quantity
+            old_gold = character.attributes.get("gold", 0) or 0
+            character.attributes["gold"] = old_gold + gold_amount
+            new_gold = character.attributes["gold"]
+
+            # Mark attributes as modified for SQLAlchemy to detect the change
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(character, "attributes")
+
+            await self.db.flush()
+
+            return {
+                "success": True,
+                "item_type": "gold",
+                "amount_added": gold_amount,
+                "old_gold": old_gold,
+                "new_gold": new_gold,
+                "message": f"Added {gold_amount} gold pieces. Total gold: {new_gold} gp",
+                "visible": True,
+            }
+        else:
+            # Add to equipment list in character attributes
+            equipment = character.attributes.get("equipment", [])
+
+            # Check if item already exists (for stackable items)
+            existing_item = None
+            for item in equipment:
+                if isinstance(item, dict) and item.get("name", "").lower() == item_lower:
+                    existing_item = item
+                    break
+                elif isinstance(item, str) and item.lower() == item_lower:
+                    # Convert string item to dict format
+                    idx = equipment.index(item)
+                    equipment[idx] = {"name": item, "quantity": 1}
+                    existing_item = equipment[idx]
+                    break
+
+            if existing_item:
+                # Update quantity of existing item
+                old_qty = existing_item.get("quantity", 1)
+                existing_item["quantity"] = old_qty + quantity
+                message = f"Added {quantity} {item_name}. Now have {existing_item['quantity']}."
+            else:
+                # Add new item
+                new_item = {"name": item_name, "quantity": quantity}
+                if value_gp:
+                    new_item["value_gp"] = value_gp
+                equipment.append(new_item)
+                message = f"Added {item_name}" + (f" x{quantity}" if quantity > 1 else "") + " to inventory."
+
+            character.attributes["equipment"] = equipment
+
+            # Mark attributes as modified for SQLAlchemy to detect the change
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(character, "attributes")
+
+            await self.db.flush()
+
+            return {
+                "success": True,
+                "item_type": "equipment",
+                "item_name": item_name,
+                "quantity": quantity,
+                "value_gp": value_gp,
+                "message": message,
+                "visible": True,
+            }
 
     # Journal tool handlers
 
@@ -1083,6 +1347,13 @@ class ToolHandler:
             result = "ineffective"
             narrative = f"The glancing blow deals no significant harm to {target_description}."
 
+        # Sync kills to CombatParticipant if encounter active and harm > 0
+        killed_names = []
+        if harm > 0 and session.active_combat_id:
+            killed_names = await self._kill_participants_by_hd(
+                session.active_combat_id, harm
+            )
+
         return {
             "damage_rolled": damage_rolled,
             "harm_dealt": harm,
@@ -1092,6 +1363,7 @@ class ToolHandler:
             "target": target_description,
             "result": result,
             "narrative": narrative,
+            "killed_in_encounter": killed_names,
             "visible": True,  # Show combat results
         }
 
@@ -1118,12 +1390,21 @@ class ToolHandler:
             harm = 2
             narrative = f"The hero strikes down two of {target_description} with deadly efficiency!"
 
+        # Sync kills to CombatParticipant if encounter active and harm > 0
+        # Fray die only kills 1HD foes
+        killed_names = []
+        if harm > 0 and session.active_combat_id:
+            killed_names = await self._kill_participants_by_hd(
+                session.active_combat_id, harm, max_hd=1
+            )
+
         return {
             "roll": fray_roll,
             "harm": harm,
             "foes_killed": harm,  # Each harm kills one 1HD foe
             "target": target_description,
             "narrative": narrative,
+            "killed_in_encounter": killed_names,
             "visible": True,  # Show Fray Die results
         }
 
@@ -1288,6 +1569,9 @@ class ToolHandler:
 
         return {
             **result,
+            # Add aliases for expected keys (calendar returns hours_advanced, consumers expect hours_passed)
+            "hours_passed": result.get("hours_advanced", 0) if result.get("hours_advanced") else hours,
+            "days_passed": days,
             "narrative": " ".join(narrative_parts),
             "visible": True,  # Show time changes to player
         }
@@ -1637,4 +1921,614 @@ class ToolHandler:
             "rendered_map": map_data_result["rendered_map"] if map_data_result else "",
             "message": f"Created map '{name}' ({width}x{height}). Player starts at ({entrance_x}, {entrance_y}).",
             "visible": True,  # Show map creation to player
+        }
+
+    # Encounter tool handlers
+
+    async def _start_encounter(
+        self,
+        input: Dict[str, Any],
+        character: Character,
+        session: Session,
+    ) -> Dict[str, Any]:
+        """Start a tracked combat encounter with persistent DB state."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+        from app.domains.combat.manager import CombatManager, EnemyStats
+        from app.domains.combat.models import CombatEncounter, CombatStatus
+        from app.domains.adventures.models import (
+            AdventureModule, AdventureLocation, AdventureEncounter, EncounterType,
+        )
+        from app.domains.campaigns.models import Campaign
+
+        # Guard: prevent double-start
+        if session.active_combat_id:
+            # Check if it's actually still active
+            result = await self.db.execute(
+                select(CombatEncounter).where(
+                    CombatEncounter.id == session.active_combat_id
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing and existing.status == CombatStatus.ACTIVE:
+                return {
+                    "error": "Combat already active. Use end_encounter first.",
+                    "encounter_id": str(session.active_combat_id),
+                    "visible": False,
+                }
+            # Stale reference - clear it
+            session.active_combat_id = None
+
+        encounter_name = input.get("encounter_name", "Combat")
+        source = input.get("source")
+        enemies_input = input.get("enemies")
+        wandering_roll = input.get("wandering_roll")
+
+        # Determine source automatically if not specified
+        if source is None:
+            source = "custom" if enemies_input else "fixed"
+
+        enemies = []
+
+        if source == "custom" and enemies_input:
+            # Use explicitly provided enemies
+            enemies = enemies_input
+        elif source in ("fixed", "wandering"):
+            # Auto-populate from adventure module encounters
+            adventure_state = session.adventure_state or {}
+            location_key = adventure_state.get("current_location_key")
+
+            if not location_key and source == "fixed":
+                return {
+                    "error": "No current location_key in adventure state. Provide enemies explicitly.",
+                    "visible": False,
+                }
+
+            # Look up adventure module via campaign
+            campaign_result = await self.db.execute(
+                select(Campaign).where(Campaign.id == session.campaign_id)
+            )
+            campaign = campaign_result.scalar_one_or_none()
+
+            if not campaign or not campaign.adventure_document_id:
+                return {
+                    "error": "No adventure module linked to campaign. Provide enemies explicitly.",
+                    "visible": False,
+                }
+
+            module_result = await self.db.execute(
+                select(AdventureModule).where(
+                    AdventureModule.pdf_document_id == campaign.adventure_document_id
+                )
+            )
+            module = module_result.scalar_one_or_none()
+
+            if not module:
+                return {
+                    "error": "Adventure module not found. Provide enemies explicitly.",
+                    "visible": False,
+                }
+
+            if source == "fixed":
+                # Get fixed encounters for current location
+                loc_result = await self.db.execute(
+                    select(AdventureLocation).where(
+                        AdventureLocation.module_id == module.id,
+                        AdventureLocation.location_key == location_key,
+                    )
+                )
+                location = loc_result.scalar_one_or_none()
+
+                if not location:
+                    return {
+                        "error": f"Location '{location_key}' not found in module. Provide enemies explicitly.",
+                        "visible": False,
+                    }
+
+                enc_result = await self.db.execute(
+                    select(AdventureEncounter).where(
+                        AdventureEncounter.location_id == location.id,
+                        AdventureEncounter.encounter_type == EncounterType.FIXED,
+                    )
+                )
+                encounter_records = list(enc_result.scalars().all())
+
+                if not encounter_records:
+                    return {
+                        "error": f"No fixed encounters at location '{location_key}'. Provide enemies explicitly.",
+                        "visible": False,
+                    }
+
+                # Expand creatures from all fixed encounters at this location
+                for enc in encounter_records:
+                    if not encounter_name or encounter_name == "Combat":
+                        encounter_name = enc.name or encounter_name
+                    for creature in (enc.creatures or []):
+                        enemies.extend(self._expand_creature_entry(creature))
+
+            elif source == "wandering":
+                # Get wandering encounters for current tier/level
+                current_tier = adventure_state.get("current_tier")
+                current_level = adventure_state.get("current_dungeon_level")
+
+                wander_query = select(AdventureEncounter).where(
+                    AdventureEncounter.module_id == module.id,
+                    AdventureEncounter.encounter_type == EncounterType.WANDERING,
+                )
+                wander_result = await self.db.execute(wander_query)
+                wandering_encounters = list(wander_result.scalars().all())
+
+                if not wandering_encounters:
+                    return {
+                        "error": "No wandering encounter table found. Provide enemies explicitly.",
+                        "visible": False,
+                    }
+
+                # Match the wandering_roll to a specific entry
+                matched_encounter = None
+                if wandering_roll is not None:
+                    for wenc in wandering_encounters:
+                        roll_range = wenc.roll_range or ""
+                        if self._roll_in_range(wandering_roll, roll_range):
+                            matched_encounter = wenc
+                            break
+
+                # Fallback: pick a random one if no roll match
+                if not matched_encounter:
+                    import random as _rand
+                    matched_encounter = _rand.choice(wandering_encounters)
+
+                if not encounter_name or encounter_name == "Combat":
+                    encounter_name = matched_encounter.name or "Wandering Encounter"
+
+                for creature in (matched_encounter.creatures or []):
+                    enemies.extend(self._expand_creature_entry(creature))
+
+        if not enemies:
+            return {
+                "error": "No enemies resolved. Provide enemies list explicitly.",
+                "visible": False,
+            }
+
+        # Start combat via CombatManager
+        combat_manager = CombatManager(self.db)
+        state = await combat_manager.start_combat(session, character, enemies)
+
+        # Set in_combat flag in game_state
+        if not session.game_state:
+            session.game_state = {}
+        game_state = dict(session.game_state)
+        game_state["in_combat"] = True
+        session.game_state = game_state
+        await self.db.flush()
+
+        # Build response
+        enemy_summary = []
+        for name, stats in state.enemies.items():
+            enemy_summary.append({
+                "name": name,
+                "hd": stats.hd,
+                "hp": stats.hp,
+                "ac": stats.ac,
+                "thac0": stats.thac0,
+                "damage": stats.damage,
+                "morale": stats.morale,
+            })
+
+        return {
+            "success": True,
+            "encounter_name": encounter_name,
+            "encounter_id": str(session.active_combat_id),
+            "round": state.round_number,
+            "initiative_order": state.initiative_order,
+            "player_initiative": state.player_initiative,
+            "is_player_turn": state.is_player_turn,
+            "current_turn": state.current_turn,
+            "enemies": enemy_summary,
+            "enemy_count": len(state.enemies),
+            "source": source,
+            "visible": False,  # Combat setup is internal DM mechanics
+        }
+
+    async def _end_encounter(
+        self,
+        input: Dict[str, Any],
+        character: Character,
+        session: Session,
+    ) -> Dict[str, Any]:
+        """End the current combat encounter."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+        from app.domains.combat.manager import CombatManager, CombatState, EnemyStats
+        from app.domains.combat.models import (
+            CombatEncounter, CombatParticipant, CombatStatus, ParticipantType,
+        )
+
+        # Guard: no active combat
+        if not session.active_combat_id:
+            return {
+                "error": "No active combat encounter to end.",
+                "visible": False,
+            }
+
+        outcome = input.get("outcome", "victory")
+
+        # Load encounter with participants
+        result = await self.db.execute(
+            select(CombatEncounter)
+            .options(selectinload(CombatEncounter.participants))
+            .where(CombatEncounter.id == session.active_combat_id)
+        )
+        encounter = result.scalar_one_or_none()
+
+        if not encounter:
+            # Stale reference
+            session.active_combat_id = None
+            if not session.game_state:
+                session.game_state = {}
+            game_state = dict(session.game_state)
+            game_state["in_combat"] = False
+            session.game_state = game_state
+            await self.db.flush()
+            return {
+                "error": "Encounter record not found. Combat state cleared.",
+                "visible": False,
+            }
+
+        # Reconstruct minimal CombatState from DB records
+        state = CombatState(
+            round_number=encounter.current_round,
+            is_active=True,
+        )
+
+        for p in encounter.participants:
+            if p.participant_type == ParticipantType.PLAYER:
+                continue
+            enemy = EnemyStats(
+                name=p.name,
+                hd=int(p.stats.get("hd", 1) or 1) if p.stats else 1,
+                hp=p.current_hp,
+                max_hp=p.max_hp,
+                ac=p.armor_class or 9,
+                thac0=p.thac0 or 19,
+                damage=str(p.stats.get("damage", "1d6") or "1d6") if p.stats else "1d6",
+                morale=p.morale or 7,
+                xp_value=int(p.stats.get("xp_value", 0) or 0) if p.stats else 0,
+            )
+            state.enemies[p.name] = enemy
+
+            if p.current_hp <= 0:
+                state.defeated_enemies.append(p.name)
+                state.total_xp_earned += enemy.xp_value
+            elif p.morale_broken:
+                state.fled_enemies.append(p.name)
+                state.total_xp_earned += enemy.xp_value // 2
+
+        # End combat via CombatManager
+        combat_manager = CombatManager(self.db)
+        summary = await combat_manager.end_combat(session, state, outcome)
+
+        # Clear in_combat flag
+        if not session.game_state:
+            session.game_state = {}
+        game_state = dict(session.game_state)
+        game_state["in_combat"] = False
+        session.game_state = game_state
+        await self.db.flush()
+
+        return {
+            "success": True,
+            "outcome": outcome,
+            "rounds": summary["rounds"],
+            "defeated_enemies": summary["defeated_enemies"],
+            "fled_enemies": summary["fled_enemies"],
+            "total_xp": summary["total_xp"],
+            "visible": False,  # Internal DM mechanics
+        }
+
+    async def _sync_participant_hp(
+        self,
+        encounter_id,
+        participant_name: str,
+        new_hp: int,
+        mark_defeated: bool = False,
+    ) -> None:
+        """Sync HP (and optionally defeated status) to a CombatParticipant record."""
+        from sqlalchemy import select
+        from app.domains.combat.models import CombatParticipant
+
+        result = await self.db.execute(
+            select(CombatParticipant).where(
+                CombatParticipant.encounter_id == encounter_id,
+                CombatParticipant.name == participant_name,
+            )
+        )
+        participant = result.scalar_one_or_none()
+        if participant:
+            participant.current_hp = max(0, new_hp)
+            if mark_defeated and new_hp <= 0:
+                participant.current_hp = 0
+            await self.db.flush()
+
+    async def _sync_participant_morale_broken(
+        self,
+        encounter_id,
+        participant_name: str,
+    ) -> None:
+        """Mark a CombatParticipant as morale_broken."""
+        from sqlalchemy import select
+        from app.domains.combat.models import CombatParticipant
+
+        result = await self.db.execute(
+            select(CombatParticipant).where(
+                CombatParticipant.encounter_id == encounter_id,
+                CombatParticipant.name == participant_name,
+            )
+        )
+        participant = result.scalar_one_or_none()
+        if participant:
+            participant.morale_broken = True
+            await self.db.flush()
+
+    async def _kill_participants_by_hd(
+        self,
+        encounter_id,
+        harm: int,
+        max_hd: int | None = None,
+    ) -> list:
+        """Kill living enemy participants by HD, lowest HP first.
+
+        Args:
+            encounter_id: Active encounter ID
+            harm: Number of HD worth of kills
+            max_hd: If set, only kill participants with HD <= this value (fray die = 1)
+
+        Returns:
+            List of names of killed participants
+        """
+        from sqlalchemy import select
+        from app.domains.combat.models import CombatParticipant, ParticipantType
+
+        result = await self.db.execute(
+            select(CombatParticipant).where(
+                CombatParticipant.encounter_id == encounter_id,
+                CombatParticipant.current_hp > 0,
+                CombatParticipant.morale_broken == False,
+            ).order_by(CombatParticipant.current_hp.asc())
+        )
+        # Filter out player participants in Python to avoid PostgreSQL enum cast issues
+        living = [
+            p for p in result.scalars().all()
+            if p.participant_type != ParticipantType.PLAYER
+        ]
+
+        killed = []
+        remaining_harm = harm
+
+        for p in living:
+            if remaining_harm <= 0:
+                break
+            hd = int(p.stats.get("hd", 1) or 1) if p.stats else 1
+            if max_hd is not None and hd > max_hd:
+                continue
+            if hd <= remaining_harm:
+                p.current_hp = 0
+                killed.append(p.name)
+                remaining_harm -= hd
+
+        if killed:
+            await self.db.flush()
+
+        return killed
+
+    def _expand_creature_entry(self, creature: Dict[str, Any]) -> list:
+        """Expand a creature JSONB entry into individual enemy dicts.
+
+        Creature entries from AdventureEncounter.creatures may have:
+        - count: int or dice string (e.g., "1d6", 3)
+        - name, hd, hp, ac, thac0, damage, morale, xp_value, etc.
+        """
+        import re
+
+        count_raw = creature.get("count", 1)
+        base_name = creature.get("name", "Enemy")
+
+        # Parse count (could be dice notation or integer)
+        if isinstance(count_raw, str):
+            match = re.match(r'(\d+)d(\d+)([+-]\d+)?', count_raw)
+            if match:
+                import random as _rand
+                num = int(match.group(1))
+                sides = int(match.group(2))
+                mod = int(match.group(3) or 0)
+                count = max(1, sum(_rand.randint(1, sides) for _ in range(num)) + mod)
+            else:
+                try:
+                    count = int(count_raw)
+                except (ValueError, TypeError):
+                    count = 1
+        else:
+            count = int(count_raw) if count_raw else 1
+
+        results = []
+        for i in range(count):
+            suffix = f" {i + 1}" if count > 1 else ""
+            enemy = {
+                "name": f"{base_name}{suffix}",
+                "hd": self._safe_int(creature.get("hd", 1), 1),
+                "ac": self._safe_int(creature.get("ac", 9), 9),
+                "thac0": self._safe_int(creature.get("thac0", 19), 19),
+                "damage": str(creature.get("damage", "1d6") or "1d6"),
+                "morale": self._safe_int(creature.get("morale", 7), 7),
+                "xp_value": self._safe_int(creature.get("xp_value", 0), 0),
+            }
+            # Only include hp if explicitly provided (otherwise auto-roll from HD)
+            if "hp" in creature:
+                enemy["hp"] = creature["hp"]
+            results.append(enemy)
+
+        return results
+
+    def _roll_in_range(self, roll: int, roll_range: str) -> bool:
+        """Check if a die roll falls within a range string like '1-2', '3', '4-6'."""
+        if not roll_range:
+            return False
+        try:
+            if "-" in roll_range:
+                parts = roll_range.split("-")
+                low, high = int(parts[0].strip()), int(parts[1].strip())
+                return low <= roll <= high
+            else:
+                return roll == int(roll_range.strip())
+        except (ValueError, IndexError):
+            return False
+
+    async def _show_illustration(
+        self,
+        input: Dict[str, Any],
+        character: Character,
+        session: Session,
+    ) -> Dict[str, Any]:
+        """Show an atmospheric illustration to the player.
+
+        Finds a matching extracted image from the adventure module using:
+        1. Keyword matching on title/description
+        2. Page proximity to current location
+        3. Random fallback if no good match
+        """
+        from sqlalchemy import select
+        from app.domains.sourcebooks.models import ExtractedImage
+        from app.domains.campaigns.models import Campaign
+        from app.domains.adventures.models import AdventureLocation
+
+        image_type = input.get("image_type", "scene")
+        description = input.get("description", "")
+        mood = input.get("mood", "dramatic")
+
+        # Get campaign to find the adventure document
+        result = await self.db.execute(
+            select(Campaign).where(Campaign.id == session.campaign_id)
+        )
+        campaign = result.scalar_one_or_none()
+
+        if not campaign or not campaign.adventure_document_id:
+            return {
+                "shown": False,
+                "reason": "No adventure module with images",
+                "generate": True,
+                "prompt": f"{mood} {image_type}: {description}",
+            }
+
+        # Find all images from the module (illustrations, not maps/covers)
+        result = await self.db.execute(
+            select(ExtractedImage)
+            .where(ExtractedImage.document_id == campaign.adventure_document_id)
+            .where(ExtractedImage.image_type == "illustration")
+            .order_by(ExtractedImage.page_number)
+        )
+        images = list(result.scalars().all())
+
+        if not images:
+            # No extracted illustrations - signal for generation
+            return {
+                "shown": False,
+                "reason": "No illustrations extracted from module",
+                "generate": True,
+                "prompt": f"{mood} {image_type}: {description}",
+            }
+
+        # Score each image for relevance
+        description_lower = description.lower()
+        keywords = set(description_lower.split())
+
+        # Get current location's page number for proximity matching
+        current_page = None
+        adventure_state = session.adventure_state or {}
+        current_location_key = adventure_state.get("current_location_key")
+
+        if current_location_key:
+            # Try to get the location's page number from the module
+            from app.domains.adventures.models import AdventureModule
+            result = await self.db.execute(
+                select(AdventureModule).where(
+                    AdventureModule.pdf_document_id == campaign.adventure_document_id
+                )
+            )
+            module = result.scalar_one_or_none()
+            if module:
+                result = await self.db.execute(
+                    select(AdventureLocation).where(
+                        AdventureLocation.module_id == module.id,
+                        AdventureLocation.location_key == current_location_key
+                    )
+                )
+                location = result.scalar_one_or_none()
+                if location and location.page_start:
+                    current_page = location.page_start
+
+        scored_images = []
+        for img in images:
+            score = 0
+
+            # Keyword matching on title
+            if img.title:
+                title_lower = img.title.lower()
+                title_words = set(title_lower.split())
+                matching_words = keywords & title_words
+                score += len(matching_words) * 3  # Title matches worth more
+
+                # Exact substring match in title
+                if description_lower in title_lower:
+                    score += 10
+
+            # Keyword matching on description
+            if img.description:
+                desc_lower = img.description.lower()
+                desc_words = set(desc_lower.split())
+                matching_words = keywords & desc_words
+                score += len(matching_words) * 2
+
+                # Exact substring match in description
+                if description_lower in desc_lower:
+                    score += 5
+
+            # Page proximity bonus (images near current location)
+            if current_page and img.page_number:
+                page_distance = abs(img.page_number - current_page)
+                if page_distance <= 2:
+                    score += 5  # Very close
+                elif page_distance <= 5:
+                    score += 2  # Nearby
+
+            # Mood matching via brightness
+            if mood in ["dark", "dangerous"] and img.brightness is not None:
+                if img.brightness < 40:
+                    score += 2  # Dark images for dark moods
+            elif mood in ["peaceful", "wondrous"] and img.brightness is not None:
+                if img.brightness > 60:
+                    score += 2  # Bright images for light moods
+
+            scored_images.append((score, img))
+
+        # Sort by score (highest first)
+        scored_images.sort(key=lambda x: x[0], reverse=True)
+
+        # Pick the best match, or random if all scores are 0
+        if scored_images[0][0] > 0:
+            selected = scored_images[0][1]
+        else:
+            # No good matches - pick random
+            import random
+            selected = random.choice(images)
+
+        return {
+            "shown": True,
+            "image_id": str(selected.id),
+            "image_path": selected.image_path,
+            "image_url": f"/api/v1/sourcebooks/images/{selected.id}/file",
+            "title": selected.title or description,
+            "description": description,
+            "mood": mood,
+            "match_score": scored_images[0][0] if scored_images else 0,
+            "visible": True,  # This signals the frontend to display the image
         }

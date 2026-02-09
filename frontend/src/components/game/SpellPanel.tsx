@@ -135,7 +135,7 @@ export function SpellPanel({ characterId, onCastSpell, onOpenSpellbook }: Props)
                     key={level}
                     className={`px-2 py-0.5 rounded ${
                       memorized > 0
-                        ? 'bg-purple-900/50 text-purple-300'
+                        ? 'bg-amber-900/50 text-amber-300'
                         : 'bg-dungeon-700 text-parchment-500'
                     }`}
                   >
@@ -271,7 +271,7 @@ export function SpellPanel({ characterId, onCastSpell, onOpenSpellbook }: Props)
               </div>
               <p className="text-xs text-parchment-400">{selectedSpell.description}</p>
               {selectedSpell.reversible && (
-                <p className="text-xs text-purple-400 mt-1">
+                <p className="text-xs text-amber-400 mt-1">
                   Reversible: {selectedSpell.reversed_name}
                 </p>
               )}

@@ -1,4 +1,9 @@
-import { useState, useRef, useEffect, useCallback, ReactNode } from "react";
+import { useState, useRef, useEffect, ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/services/api";
+import DiceBoardPanel, { DiceBoardPanelHandle } from "./DiceBoardPanel";
+import { PlayerMapPanel } from "@/components/graph/PlayerMapPanel";
+import { BottomControlPanel } from "./BottomControlPanel";
 
 const AeyeLogo = ({ size = 28, color = "#b8a060" }: { size?: number; color?: string }) => (
   <svg width={size} height={size} viewBox="0 0 80 80" fill="none" style={{ flexShrink: 0 }}>
@@ -118,27 +123,10 @@ export interface OSRPlayInterfaceProps {
   onRoll?: (notation: string) => void;
   adventureTitle?: string;
   campaignName?: string;
+  onOpenConfig?: () => void;
+  sessionId?: string;
+  adventureDocumentId?: string;
 }
-
-/* ─── DICE ROLLER LOGIC ─── */
-const rollDie = (sides: number) => Math.floor(Math.random() * sides) + 1;
-
-const parseDiceNotation = (notation: string) => {
-  const match = notation.match(/^(\d+)?d(\d+)([+-]\d+)?$/i);
-  if (!match) return null;
-  const count = parseInt(match[1] || "1");
-  const sides = parseInt(match[2]);
-  const mod = parseInt(match[3] || "0");
-  return { count, sides, mod };
-};
-
-const rollDice = (notation: string) => {
-  const parsed = parseDiceNotation(notation);
-  if (!parsed) return null;
-  const rolls = Array.from({ length: parsed.count }, () => rollDie(parsed.sides));
-  const total = rolls.reduce((a, b) => a + b, 0) + parsed.mod;
-  return { rolls, total, mod: parsed.mod, notation };
-};
 
 /* ─── COMPONENTS ─── */
 
@@ -211,33 +199,6 @@ const WeaponSlot = ({ weapon, onAttack }: { weapon: CharacterData["weapons"][0];
   </div>
 );
 
-const DiceButton = ({ label, onClick }: { label: string; onClick: () => void }) => (
-  <button onClick={onClick} style={{
-    padding: "5px 10px", borderRadius: 4, cursor: "pointer",
-    background: "var(--bg-card)", border: "1px solid var(--border)",
-    fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-dim)",
-    transition: "all 0.15s", minWidth: 36, textAlign: "center",
-  }}
-  onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--gold)"; e.currentTarget.style.color = "var(--gold)"; }}
-  onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-dim)"; }}
-  >{label}</button>
-);
-
-const QuickAction = ({ icon, label, onClick }: { icon: string; label: string; onClick: () => void }) => (
-  <button onClick={onClick} style={{
-    display: "inline-flex", alignItems: "center", gap: 6,
-    padding: "6px 14px", borderRadius: 20,
-    background: "transparent", border: "1px solid var(--border)",
-    color: "var(--text-dim)", cursor: "pointer",
-    fontFamily: "var(--font-body)", fontSize: 13,
-    transition: "all 0.2s", whiteSpace: "nowrap",
-  }}
-  onMouseEnter={e => { e.currentTarget.style.background = "rgba(184,160,100,0.06)"; e.currentTarget.style.borderColor = "var(--gold-dim)"; e.currentTarget.style.color = "var(--text)"; }}
-  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-dim)"; }}
-  >
-    <span style={{ fontSize: 13 }}>{icon}</span>{label}
-  </button>
-);
 
 const RollResult = ({ msg }: { msg: MessageData }) => (
   <div className="msg-enter" style={{
@@ -391,20 +352,15 @@ export function OSRPlayInterface({
   currentLocation = "Unknown",
   onSendMessage,
   onLeave,
-  onRoll,
+  onRoll: _onRoll,
   adventureTitle = "",
   campaignName: _campaignName = "",
+  onOpenConfig,
+  sessionId,
+  adventureDocumentId,
 }: OSRPlayInterfaceProps) {
-  const [inputText, setInputText] = useState("");
   const [leftTab, setLeftTab] = useState("character");
   const [rightTab, setRightTab] = useState("world");
-  const [diceResults, setDiceResults] = useState<ReturnType<typeof rollDice>[]>([]);
-  const [diceInput, setDiceInput] = useState("2d6");
-  const [customActions, setCustomActions] = useState<{ icon: string; label: string; prompt: string }[]>([]);
-  const [showAddAction, setShowAddAction] = useState(false);
-  const [newActionIcon, setNewActionIcon] = useState("⚡");
-  const [newActionLabel, setNewActionLabel] = useState("");
-  const [newActionPrompt, setNewActionPrompt] = useState("");
   const [expandedSpell, setExpandedSpell] = useState<string | null>(null);
   const [expandedNPC, setExpandedNPC] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -413,7 +369,16 @@ export function OSRPlayInterface({
   const [showAddEquip, setShowAddEquip] = useState(false);
   const [newEquipValue, setNewEquipValue] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const dicePanelRef = useRef<DiceBoardPanelHandle>(null);
+  const suppressDiceChat = useRef(false);
+
+  // Resolve module ID from adventure document ID for player map
+  const { data: adventureModule } = useQuery({
+    queryKey: ["adventure-module-by-doc", adventureDocumentId],
+    queryFn: () => api.get<{ id: string }>(`/adventures/by-document/${adventureDocumentId}`),
+    enabled: !!adventureDocumentId,
+  });
+  const moduleId = adventureModule?.id;
 
   // Load theme from localStorage
   useEffect(() => {
@@ -430,76 +395,9 @@ export function OSRPlayInterface({
     localStorage.setItem("osr-theme", newTheme);
   };
 
-  // Load custom actions from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem("osr-custom-actions");
-    if (saved) {
-      try {
-        setCustomActions(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to load custom actions:", e);
-      }
-    }
-  }, []);
-
-  // Save custom actions to localStorage
-  useEffect(() => {
-    localStorage.setItem("osr-custom-actions", JSON.stringify(customActions));
-  }, [customActions]);
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
-
-  const handleRoll = useCallback((notation: string) => {
-    const result = rollDice(notation);
-    if (result) {
-      setDiceResults(prev => [result, ...prev].slice(0, 8));
-      onRoll?.(notation);
-    }
-  }, [onRoll]);
-
-  const handleAddAction = () => {
-    if (!newActionLabel.trim()) return;
-    setCustomActions(prev => [...prev, {
-      icon: newActionIcon || "⚡",
-      label: newActionLabel.trim(),
-      prompt: newActionPrompt.trim() || newActionLabel.trim(),
-    }]);
-    setNewActionIcon("⚡");
-    setNewActionLabel("");
-    setNewActionPrompt("");
-    setShowAddAction(false);
-  };
-
-  const handleRemoveAction = (index: number) => {
-    setCustomActions(prev => prev.filter((_, i) => i !== index));
-  };
-
-  const handleSend = () => {
-    if (!inputText.trim() || isLoading) return;
-    onSendMessage(inputText.trim());
-    setInputText("");
-    textareaRef.current?.focus();
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
-  const quickActions = [
-    { icon: "🔍", label: "Search" },
-    { icon: "👂", label: "Listen" },
-    { icon: "🚪", label: "Open door" },
-    { icon: "👁", label: "Look around" },
-    { icon: "🎒", label: "Check inventory" },
-    { icon: "⏳", label: "Rest" },
-    { icon: "🗣", label: "Talk" },
-    { icon: "🕯", label: "Light torch" },
-  ];
 
   // Render markdown bold text
   const renderBold = (text: string): ReactNode => {
@@ -585,18 +483,6 @@ export function OSRPlayInterface({
         .panel-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
       `}</style>
 
-      {/* ATMOSPHERIC EDGE GRADIENTS */}
-      <div style={{
-        position: "fixed", left: 0, top: 0, bottom: 0, width: "15%",
-        background: "linear-gradient(to right, rgba(5,4,3,0.9), transparent)",
-        pointerEvents: "none", zIndex: 100,
-      }} />
-      <div style={{
-        position: "fixed", right: 0, top: 0, bottom: 0, width: "15%",
-        background: "linear-gradient(to left, rgba(5,4,3,0.9), transparent)",
-        pointerEvents: "none", zIndex: 100,
-      }} />
-
       {/* NOISE TEXTURE */}
       <div style={{
         position: "fixed", inset: 0, pointerEvents: "none", zIndex: 9999, opacity: 0.025,
@@ -647,6 +533,20 @@ export function OSRPlayInterface({
             )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {/* Settings button */}
+            {onOpenConfig && (
+              <button
+                onClick={onOpenConfig}
+                style={{
+                  background: "none", border: "1px solid var(--border)", borderRadius: 4,
+                  padding: "4px 8px", cursor: "pointer", fontSize: 12,
+                  color: "var(--muted)", fontFamily: "var(--font-mono)",
+                }}
+                title="Game settings"
+              >
+                ⚙️
+              </button>
+            )}
             {/* Theme toggle */}
             <button
               onClick={toggleTheme}
@@ -682,7 +582,7 @@ export function OSRPlayInterface({
         }}>
           {/* Tab bar */}
           <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-            {[["character", "Stats"], ["spells", "Spells"], ["equip", "Gear"]].map(([key, label]) => (
+            {[["character", "Stats"], ["spells", "Spells"], ["equip", "Gear"], ["dice", "Dice"]].map(([key, label]) => (
               <button key={key} className={`panel-tab ${leftTab === key ? "active" : ""}`} onClick={() => setLeftTab(key)} style={{ flex: 1 }}>
                 {label}
               </button>
@@ -726,14 +626,6 @@ export function OSRPlayInterface({
                   <StatBox label="AC" value={character.ac} icon="🛡" />
                   <StatBox label="THAC0" value={character.thac0} icon="⚔" />
                   <StatBox label="MV" value={character.movement || 120} icon="👣" />
-                </div>
-
-                {/* Weapons */}
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontFamily: "var(--font-label)", fontSize: 9, letterSpacing: "0.15em", color: "var(--muted)", marginBottom: 8 }}>WEAPONS</div>
-                  {character.weapons.map((w, i) => (
-                    <WeaponSlot key={i} weapon={w} onAttack={() => onSendMessage(`I attack with my ${w.name}. Roll d20 to hit and ${w.damage} for damage.`)} />
-                  ))}
                 </div>
 
                 {/* Ability Scores */}
@@ -844,7 +736,7 @@ export function OSRPlayInterface({
                             }}
                             onMouseEnter={e => e.currentTarget.style.background = "rgba(180,160,80,0.18)"}
                             onMouseLeave={e => e.currentTarget.style.background = "rgba(180,160,80,0.1)"}
-                            onClick={(e) => { e.stopPropagation(); setInputText(`I cast ${spell.name}`); }}
+                            onClick={(e) => { e.stopPropagation(); onSendMessage(`I cast ${spell.name}`); }}
                             >✦ Cast</button>
                           )}
                         </div>
@@ -1082,6 +974,18 @@ export function OSRPlayInterface({
                 </div>
               </>
             )}
+
+            <div style={{ display: leftTab === "dice" ? "block" : "none" }}>
+              <DiceBoardPanel ref={dicePanelRef} onRollResult={(notation, total, rolls, mod) => {
+                if (suppressDiceChat.current) {
+                  suppressDiceChat.current = false;
+                  return;
+                }
+                const rollDetail = rolls.length > 1 ? ` [${rolls.join(", ")}]` : "";
+                const modDetail = mod !== 0 ? (mod > 0 ? ` +${mod}` : ` ${mod}`) : "";
+                onSendMessage(`[ROLL] ${notation}: ${total}${rollDetail}${modDetail}`);
+              }} />
+            </div>
           </div>
         </aside>
 
@@ -1176,227 +1080,12 @@ export function OSRPlayInterface({
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Quick Actions */}
-          <div style={{
-            padding: "8px 28px",
-            borderTop: "1px solid var(--border)",
-            display: "flex", flexDirection: "column", gap: 6,
-            background: "var(--bg-panel)",
-          }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-              {quickActions.map((a, i) => (
-                <QuickAction key={`default-${i}`} icon={a.icon} label={a.label} onClick={() => setInputText(`I ${a.label.toLowerCase()}`)} />
-              ))}
-              {customActions.map((a, i) => (
-                <div key={`custom-${i}`} style={{ position: "relative", display: "inline-flex" }}>
-                  <QuickAction icon={a.icon} label={a.label} onClick={() => setInputText(a.prompt)} />
-                  <button
-                    onClick={() => handleRemoveAction(i)}
-                    style={{
-                      position: "absolute", top: -4, right: -4,
-                      width: 16, height: 16, borderRadius: "50%",
-                      background: "rgba(140,60,60,0.8)", border: "none",
-                      color: "#fff", fontSize: 9, cursor: "pointer",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      opacity: 0, transition: "opacity 0.15s",
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                  >×</button>
-                </div>
-              ))}
-              {/* Add button */}
-              <button
-                onClick={() => setShowAddAction(!showAddAction)}
-                style={{
-                  display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, borderRadius: 20,
-                  background: showAddAction ? "rgba(180,160,80,0.12)" : "transparent",
-                  border: `1px dashed ${showAddAction ? "var(--gold)" : "var(--border)"}`,
-                  color: showAddAction ? "var(--gold)" : "var(--muted)",
-                  cursor: "pointer", fontSize: 16, transition: "all 0.2s",
-                }}
-                onMouseEnter={e => { if (!showAddAction) { e.currentTarget.style.borderColor = "var(--gold-dim)"; e.currentTarget.style.color = "var(--gold)"; }}}
-                onMouseLeave={e => { if (!showAddAction) { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--muted)"; }}}
-              >+</button>
-            </div>
-
-            {/* Add Custom Action Form */}
-            {showAddAction && (
-              <div style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "8px 12px", borderRadius: 6,
-                background: "rgba(180,160,80,0.04)",
-                border: "1px solid rgba(180,160,80,0.12)",
-              }}>
-                <input
-                  value={newActionIcon}
-                  onChange={e => setNewActionIcon(e.target.value)}
-                  placeholder="⚡"
-                  maxLength={2}
-                  style={{
-                    width: 36, padding: "5px 4px", borderRadius: 4, textAlign: "center",
-                    background: "var(--bg-input)", border: "1px solid var(--border)",
-                    fontFamily: "var(--font-body)", fontSize: 14, color: "var(--text)",
-                  }}
-                />
-                <input
-                  value={newActionLabel}
-                  onChange={e => setNewActionLabel(e.target.value)}
-                  placeholder="Button label"
-                  style={{
-                    width: 110, padding: "5px 8px", borderRadius: 4,
-                    background: "var(--bg-input)", border: "1px solid var(--border)",
-                    fontFamily: "var(--font-body)", fontSize: 13, color: "var(--text)",
-                  }}
-                />
-                <input
-                  value={newActionPrompt}
-                  onChange={e => setNewActionPrompt(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") handleAddAction(); }}
-                  placeholder="Prompt text (optional — defaults to label)"
-                  style={{
-                    flex: 1, padding: "5px 8px", borderRadius: 4,
-                    background: "var(--bg-input)", border: "1px solid var(--border)",
-                    fontFamily: "var(--font-body)", fontSize: 13, color: "var(--text)",
-                  }}
-                />
-                <button
-                  onClick={handleAddAction}
-                  disabled={!newActionLabel.trim()}
-                  style={{
-                    padding: "5px 14px", borderRadius: 4, cursor: newActionLabel.trim() ? "pointer" : "default",
-                    background: newActionLabel.trim() ? "rgba(180,160,80,0.15)" : "transparent",
-                    border: `1px solid ${newActionLabel.trim() ? "var(--gold-dim)" : "var(--border)"}`,
-                    fontFamily: "var(--font-label)", fontSize: 10, letterSpacing: "0.08em",
-                    color: newActionLabel.trim() ? "var(--gold)" : "var(--muted)",
-                    transition: "all 0.15s", whiteSpace: "nowrap",
-                  }}
-                >SAVE</button>
-                <button
-                  onClick={() => setShowAddAction(false)}
-                  style={{
-                    padding: "5px 8px", borderRadius: 4, cursor: "pointer",
-                    background: "transparent", border: "1px solid var(--border)",
-                    fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)",
-                  }}
-                >✕</button>
-              </div>
-            )}
-          </div>
-
-          {/* Dice Roller */}
-          <div style={{
-            padding: "8px 28px",
-            borderTop: "1px solid rgba(180,160,100,0.05)",
-            background: "var(--bg-panel)",
-            display: "flex", alignItems: "center", gap: 8,
-          }}>
-            {["d4", "d6", "d8", "d10", "d12", "d20"].map(d => (
-              <DiceButton key={d} label={d} onClick={() => handleRoll("1" + d)} />
-            ))}
-            <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
-            <input
-              value={diceInput}
-              onChange={e => setDiceInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") handleRoll(diceInput); }}
-              style={{
-                width: 72, padding: "5px 8px", borderRadius: 4,
-                background: "var(--bg-input)", border: "1px solid var(--border)",
-                fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text)",
-              }}
-            />
-            <button onClick={() => handleRoll(diceInput)} style={{
-              padding: "5px 14px", borderRadius: 4, cursor: "pointer",
-              background: "var(--bg-card)", border: "1px solid var(--gold-dim)",
-              fontFamily: "var(--font-label)", fontSize: 10, letterSpacing: "0.1em",
-              color: "var(--gold)", transition: "all 0.15s",
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = "rgba(180,160,80,0.1)"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "var(--bg-card)"; }}
-            >ROLL</button>
-
-            {diceResults.length > 0 && diceResults[0] && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                  {diceResults[0].notation}:
-                </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 15, fontWeight: 600, color: "var(--gold-bright)" }}>
-                  {diceResults[0].total}
-                </span>
-                {diceResults[0].rolls.length > 1 && (
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
-                    [{diceResults[0].rolls.join(", ")}]{diceResults[0].mod !== 0 ? (diceResults[0].mod > 0 ? `+${diceResults[0].mod}` : diceResults[0].mod) : ""}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Direction Buttons */}
-            <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: "auto" }}>
-              <span style={{ fontFamily: "var(--font-label)", fontSize: 8, letterSpacing: "0.1em", color: "var(--muted)", marginRight: 6 }}>GO:</span>
-              {["N", "S", "E", "W"].map((dir) => (
-                <button
-                  key={dir}
-                  onClick={() => onSendMessage(`I go ${dir === "N" ? "north" : dir === "S" ? "south" : dir === "E" ? "east" : "west"}`)}
-                  style={{
-                    width: 26, height: 24, borderRadius: 3, cursor: "pointer",
-                    background: "var(--bg-card)", border: "1px solid var(--border)",
-                    fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
-                    color: "var(--text-dim)", transition: "all 0.15s",
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--gold-dim)"; e.currentTarget.style.color = "var(--gold)"; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-dim)"; }}
-                >{dir}</button>
-              ))}
-            </div>
-          </div>
-
-          {/* Text Input */}
-          <div style={{
-            padding: "12px 28px 16px",
-            borderTop: "1px solid rgba(180,160,100,0.05)",
-            background: "var(--bg-panel)",
-            display: "flex", alignItems: "flex-end", gap: 12,
-          }}>
-            <textarea
-              ref={textareaRef}
-              value={inputText}
-              onChange={e => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="What do you do?"
-              rows={2}
-              disabled={isLoading}
-              style={{
-                flex: 1, padding: "10px 14px", borderRadius: 6,
-                background: "var(--bg-input)", border: "1px solid var(--border)",
-                fontFamily: "var(--font-body)", fontSize: 15, lineHeight: 1.5,
-                color: "var(--text)", minHeight: 44, maxHeight: 120,
-                opacity: isLoading ? 0.6 : 1,
-              }}
-              onFocus={e => e.currentTarget.style.borderColor = "var(--gold-dim)"}
-              onBlur={e => e.currentTarget.style.borderColor = "var(--border)"}
-            />
-            <button
-              onClick={handleSend}
-              disabled={isLoading || !inputText.trim()}
-              style={{
-                width: 44, height: 44, borderRadius: 6, cursor: isLoading ? "wait" : "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                background: inputText.trim() && !isLoading ? "linear-gradient(135deg, #8a7030, #b8a060)" : "var(--bg-card)",
-                border: inputText.trim() && !isLoading ? "1px solid var(--gold)" : "1px solid var(--border)",
-                transition: "all 0.2s", flexShrink: 0,
-              }}
-            >
-              {isLoading ? (
-                <div style={{ width: 18, height: 18, border: "2px solid var(--muted)", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={inputText.trim() ? "#1a1a14" : "var(--muted)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-              )}
-            </button>
-          </div>
+          {/* Bottom Control Panel */}
+          <BottomControlPanel
+            onSendMessage={onSendMessage}
+            isLoading={isLoading}
+            weapons={character.weapons}
+          />
         </main>
 
         {/* ═══ RIGHT PANEL — WORLD STATE ═══ */}
@@ -1523,10 +1212,16 @@ export function OSRPlayInterface({
             )}
 
             {rightTab === "map" && (
-              <div>
-                <div style={{ fontFamily: "var(--font-label)", fontSize: 9, letterSpacing: "0.15em", color: "var(--muted)", marginBottom: 10 }}>{mapData?.map_name || "AREA MAP"}</div>
-                {mapData && mapData.rendered_map ? (
-                  <>
+              <div style={{ height: "100%", minHeight: 300 }}>
+                {moduleId && sessionId ? (
+                  <PlayerMapPanel
+                    moduleId={moduleId}
+                    sessionId={sessionId}
+                    currentLocationKey={undefined}
+                  />
+                ) : mapData && mapData.rendered_map ? (
+                  <div>
+                    <div style={{ fontFamily: "var(--font-label)", fontSize: 9, letterSpacing: "0.15em", color: "var(--muted)", marginBottom: 10 }}>{mapData.map_name || "AREA MAP"}</div>
                     <div style={{
                       background: "var(--bg-deep)",
                       border: "1px solid var(--border)",
@@ -1546,7 +1241,7 @@ export function OSRPlayInterface({
                         {mapData.exploration_progress}
                       </div>
                     )}
-                  </>
+                  </div>
                 ) : (
                   <div style={{
                     background: "var(--bg-deep)",

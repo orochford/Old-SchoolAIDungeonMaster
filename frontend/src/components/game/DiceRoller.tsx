@@ -13,6 +13,7 @@ interface RollResult {
 
 interface DiceRollerProps {
   onRoll?: (result: RollResult) => void
+  onDirection?: (direction: string) => void
   compact?: boolean
 }
 
@@ -25,7 +26,9 @@ const DICE_TYPES = [
   { sides: 20, label: 'd20' },
 ]
 
-export function DiceRoller({ onRoll, compact = false }: DiceRollerProps) {
+const DIRECTIONS = ['N', 'S', 'E', 'W'] as const
+
+export function DiceRoller({ onRoll, onDirection, compact = false }: DiceRollerProps) {
   const [customNotation, setCustomNotation] = useState('')
   const [rollHistory, setRollHistory] = useState<RollResult[]>([])
   const [lastRoll, setLastRoll] = useState<RollResult | null>(null)
@@ -93,6 +96,23 @@ export function DiceRoller({ onRoll, compact = false }: DiceRollerProps) {
         >
           Roll
         </button>
+        {/* Direction Buttons */}
+        {onDirection && (
+          <>
+            <div className="w-px h-5 bg-dungeon-600" />
+            <div className="flex gap-0.5">
+              {DIRECTIONS.map((dir) => (
+                <button
+                  key={dir}
+                  onClick={() => onDirection(dir)}
+                  className="bg-dungeon-700 hover:bg-dungeon-600 text-parchment-300 hover:text-parchment-100 rounded w-6 h-6 text-[10px] font-bold transition-colors"
+                >
+                  {dir}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         {/* Last Result */}
         {lastRoll && (
           <span className="text-parchment-200 text-sm ml-2">

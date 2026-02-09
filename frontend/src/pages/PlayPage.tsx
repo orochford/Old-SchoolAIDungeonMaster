@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ArrowLeft, Loader, Scroll } from 'lucide-react'
 import { api } from '@/services/api'
@@ -42,10 +42,20 @@ interface Character {
 interface Campaign {
   id: string
   name: string
+  adventure_document_id?: string | null
   settings?: {
     character_id?: string
+    dm_style?: string
   }
 }
+
+const DM_STYLES = [
+  { value: '', label: 'Default', description: 'Standard DM narration style' },
+  { value: 'gary_gygax', label: 'Gary Gygax', description: 'Rich, arcane vocabulary with elaborate prose' },
+  { value: 'robert_e_howard', label: 'Robert E. Howard', description: 'Muscular, visceral, action-driven' },
+  { value: 'fritz_leiber', label: 'Fritz Leiber', description: 'Witty, urbane, sardonic rogues and cities' },
+  { value: 'dnd_show', label: 'D&D TV Show DM', description: 'Mysterious riddles and cryptic hints' },
+]
 
 interface Session {
   id: string
@@ -129,6 +139,7 @@ interface TimeData {
 export function PlayPage() {
   const { characterId, campaignId: urlCampaignId } = useParams()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
@@ -158,6 +169,8 @@ export function PlayPage() {
     loot_found: string[]
     mood: string
   } | null>(null)
+  const [showConfig, setShowConfig] = useState(false)
+  const [showLeavePrompt, setShowLeavePrompt] = useState(false)
   const streamingContentRef = useRef('')  // Ref to avoid stale closure
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -192,6 +205,15 @@ export function PlayPage() {
     onSuccess: (session) => {
       setSessionId(session.id)
       connectWebSocket(session.id)
+    },
+  })
+
+  const updateCampaignMutation = useMutation({
+    mutationFn: async ({ campaignId, settings }: { campaignId: string; settings: Record<string, unknown> }) => {
+      return api.patch(`/campaigns/${campaignId}`, { settings })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
     },
   })
 
@@ -956,14 +978,23 @@ export function PlayPage() {
     )
   }
 
-  // Handle leaving the session
+  // Handle leaving the session - show save prompt
   const handleLeave = () => {
-    if (confirm('Leave without saving? Your session will continue where you left off.')) {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close()
-      }
-      navigate(`/characters/${characterId}`)
+    setShowLeavePrompt(true)
+  }
+
+  const handleLeaveWithoutSaving = () => {
+    setShowLeavePrompt(false)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.close()
     }
+    navigate(`/characters/${characterId}`)
+  }
+
+  const handleSaveAndLeave = () => {
+    setShowLeavePrompt(false)
+    setShowEndSession(true)
+    handleEndSession()
   }
 
   if (!adaptedCharacter) {
@@ -1003,6 +1034,9 @@ export function PlayPage() {
         onLeave={handleLeave}
         adventureTitle={framingData?.adventure_title || ''}
         campaignName={campaigns?.find((c) => c.id === selectedCampaign)?.name || ''}
+        onOpenConfig={() => setShowConfig(true)}
+        sessionId={sessionId || undefined}
+        adventureDocumentId={campaigns?.find((c) => c.id === selectedCampaign)?.adventure_document_id || undefined}
       />
 
       {/* Session Recap Modal */}
@@ -1046,6 +1080,91 @@ export function PlayPage() {
           illustration={illustrationData}
           onDismiss={() => setIllustrationData(null)}
         />
+      )}
+
+      {/* Leave Session Prompt */}
+      {showLeavePrompt && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowLeavePrompt(false)}>
+          <div
+            className="bg-[#141210] border border-[rgba(180,160,100,0.2)] rounded-lg p-6 max-w-sm w-full shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="font-['Cinzel',serif] text-xl text-[#d4b870] mb-3">Leave Session</h2>
+            <p className="text-[#c8c0aa] font-['Crimson_Text',serif] mb-6 leading-relaxed">
+              Would you like to save your progress before leaving? Saving will generate a session summary for your journal.
+            </p>
+
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={handleSaveAndLeave}
+                className="w-full px-4 py-2.5 bg-[rgba(184,160,96,0.15)] border border-[rgba(184,160,96,0.3)] text-[#d4b870] hover:bg-[rgba(184,160,96,0.25)] font-['Cinzel',serif] text-sm rounded transition-colors"
+              >
+                Save & Leave
+              </button>
+              <button
+                onClick={handleLeaveWithoutSaving}
+                className="w-full px-4 py-2.5 bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#8a8270] hover:text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] text-sm rounded transition-colors"
+              >
+                Leave Without Saving
+              </button>
+              <button
+                onClick={() => setShowLeavePrompt(false)}
+                className="w-full px-4 py-2 text-[#6a6250] hover:text-[#8a8270] font-['Crimson_Text',serif] text-sm transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Config Modal */}
+      {showConfig && selectedCampaign && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowConfig(false)}>
+          <div
+            className="bg-[#141210] border border-[rgba(180,160,100,0.2)] rounded-lg p-6 max-w-md w-full shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="font-['Cinzel',serif] text-xl text-[#d4b870] mb-4">Game Settings</h2>
+
+            <div className="mb-6">
+              <label className="block text-[#8a8270] text-sm font-['Cinzel',serif] mb-2">
+                DM Narrative Style
+              </label>
+              <select
+                value={campaigns?.find(c => c.id === selectedCampaign)?.settings?.dm_style || ''}
+                onChange={(e) => {
+                  const campaign = campaigns?.find(c => c.id === selectedCampaign)
+                  if (campaign) {
+                    updateCampaignMutation.mutate({
+                      campaignId: campaign.id,
+                      settings: { ...campaign.settings, dm_style: e.target.value }
+                    })
+                  }
+                }}
+                className="w-full bg-[#0f0d0a] border border-[rgba(180,160,100,0.2)] text-[#c8c0aa] rounded px-3 py-2 font-['Crimson_Text',serif]"
+              >
+                {DM_STYLES.map(style => (
+                  <option key={style.value} value={style.value}>
+                    {style.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs text-[#6a6250] font-['Crimson_Text',serif]">
+                {DM_STYLES.find(s => s.value === (campaigns?.find(c => c.id === selectedCampaign)?.settings?.dm_style || ''))?.description}
+              </p>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setShowConfig(false)}
+                className="px-4 py-2 bg-[rgba(255,245,220,0.03)] border border-[rgba(180,160,100,0.1)] text-[#c8c0aa] hover:bg-[rgba(255,245,220,0.06)] font-['Cinzel',serif] text-sm rounded transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   )

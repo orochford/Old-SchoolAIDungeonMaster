@@ -34,6 +34,7 @@ from app.domains.adventures.preprocessor import AdventurePreprocessor
 from app.domains.adventures.passes import (
     OverviewPass,
     LocationsPass,
+    MapValidationPass,
     InhabitantsPass,
     DMGuidancePass,
     PlayerContentPass,
@@ -69,6 +70,7 @@ class MultiPassParser:
         self.passes = [
             OverviewPass(db),       # Pass 1
             LocationsPass(db),      # Pass 2
+            MapValidationPass(db),  # Pass 2.5
             InhabitantsPass(db),    # Pass 3
             DMGuidancePass(db),     # Pass 4
             PlayerContentPass(db),  # Pass 5
@@ -196,6 +198,23 @@ class MultiPassParser:
 
                 await self._update_progress(module, pass_end_progress, progress_callback)
                 await self._persist_pass_results(module)
+
+            # Post-parse completeness verification
+            preprocessed_keys = {str(r.get('location_key', '')) for r in preprocessed.get('rooms', [])}
+            result = await self.db.execute(
+                select(AdventureLocation.location_key)
+                .where(AdventureLocation.module_id == module.id)
+            )
+            extracted_keys = {row[0] for row in result.fetchall()}
+            still_missing = preprocessed_keys - extracted_keys
+
+            if still_missing:
+                self._log(f"WARNING: {len(still_missing)} rooms still missing after all passes: {sorted(still_missing)}")
+                self.context.verification_issues.append(
+                    f"MISSING ROOMS: {len(still_missing)} rooms from preprocessor not extracted: {sorted(still_missing)}"
+                )
+            else:
+                self._log(f"Completeness check: all {len(preprocessed_keys)} preprocessed rooms extracted successfully")
 
             # Generate embeddings
             self._log("Generating search embeddings...")

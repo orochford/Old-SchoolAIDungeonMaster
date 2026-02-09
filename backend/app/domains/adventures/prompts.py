@@ -412,6 +412,14 @@ Extract detailed information for the following location(s). For each location:
 - Note what players see immediately vs what requires searching
 - Include ALL exits including secret ones
 
+## CRITICAL: EXIT DIRECTIONS
+- Only include exits that are EXPLICITLY described in this room's text
+- Use the EXACT direction stated in the module (north, south, east, west, etc.)
+- If the text says "a passage leads north to room 2", record {{"north": "2"}}
+- Do NOT invent or guess directions - only use what the text explicitly states
+- If a room mentions "the way you came" without a specific direction, skip that exit
+- Exits should be from THIS room's perspective, not from connecting rooms
+
 ## OUTPUT FORMAT
 ```json
 {{

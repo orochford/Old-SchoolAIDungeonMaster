@@ -27,11 +27,20 @@ class Settings(BaseSettings):
     processing_claude_model: str = "claude-haiku-4-5-20250101"
     processing_openai_model: str = "gpt-4o-mini"
 
+    # DM Narrative Style (global default)
+    dm_style: str = ""
+
     # PDF Storage
     pdf_storage_path: str = "/home/orochford/rpgs"
 
     # Markdown export storage (for LLM context loading)
     markdown_storage_path: str = "/home/orochford/rpgs/markdown"
+
+    # Graph storage (for knowledge graphs)
+    graph_storage_path: str = "/home/orochford/rpgs/graphs"
+
+    # Character portrait storage
+    portraits_storage_path: str = "/home/orochford/rpgs/portraits"
 
     # RAG Settings
     chunk_size: int = 1000

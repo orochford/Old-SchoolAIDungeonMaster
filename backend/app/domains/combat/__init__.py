@@ -6,6 +6,7 @@ from .models import (
     CombatStatus,
     ParticipantType,
 )
+from .manager import CombatManager, CombatState, EnemyStats
 
 __all__ = [
     "CombatEncounter",
@@ -14,4 +15,7 @@ __all__ = [
     "ActiveCondition",
     "CombatStatus",
     "ParticipantType",
+    "CombatManager",
+    "CombatState",
+    "EnemyStats",
 ]

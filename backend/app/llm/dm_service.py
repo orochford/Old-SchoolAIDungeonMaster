@@ -6,11 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.llm.client import ClaudeClient
+from app.llm.client import ClaudeClient, load_image_as_base64
 from app.llm.prompts.dm_system import build_dm_system_prompt
 from app.llm.prompts.adventure_prompt import build_adventure_context_section
-from app.llm.tools.definitions import DM_TOOLS, ADVENTURE_TOOLS, JOURNAL_TOOLS, SOLO_HERO_TOOLS, CALENDAR_TOOLS, MAP_TOOLS
+from app.llm.tools.definitions import DM_TOOLS, ADVENTURE_TOOLS, JOURNAL_TOOLS, SOLO_HERO_TOOLS, CALENDAR_TOOLS, MAP_TOOLS, ENCOUNTER_TOOLS, IMAGE_TOOLS
 from app.llm.tools.handlers import ToolHandler
+from app.llm.combat_agent import CombatAgent
+from app.llm.location_agent import LocationAgent
+from app.llm.loot_agent import LootAgent
+from app.llm.time_agent import TimeAgent
+from app.llm.spell_agent import SpellAgent
+from app.llm.subarea_agent import SubAreaAgent
 from app.rag.retriever import RAGRetriever
 from app.llm.adventure_planner import AdventurePlanner
 from app.domains.sessions.models import Session, ConversationMessage, MessageRole
@@ -19,7 +25,9 @@ from app.domains.campaigns.models import Campaign
 from app.domains.sourcebooks.models import PDFDocument
 from app.domains.adventures.retriever import AdventureDataRetriever
 from app.domains.adventures.models import AdventureModule, ParsingStatus
+from app.domains.adventures.graph_rag.context_provider import GraphContextProvider
 from app.domains.sourcebooks.models import PDFDocument
+from app.game.damage_extractor import DamageExtractor
 import os
 import logging
 
@@ -34,7 +42,14 @@ class DMService:
         self.client = ClaudeClient()
         self.retriever = RAGRetriever(session)
         self.tool_handler = ToolHandler(session)
+        self.combat_agent = CombatAgent(self.tool_handler, session)
+        self.location_agent = LocationAgent(self.tool_handler, session)
+        self.loot_agent = LootAgent(self.tool_handler, session)
+        self.time_agent = TimeAgent(self.tool_handler, session)
+        self.spell_agent = SpellAgent(self.tool_handler, session)
+        self.subarea_agent = SubAreaAgent(self.tool_handler, session)
         self.adventure_planner = AdventurePlanner(session)
+        self.damage_extractor = DamageExtractor(session)
 
     def _transform_party_to_solo(self, text: str) -> str:
         """Transform party-oriented language to solo player language.
@@ -82,6 +97,94 @@ class DMService:
 
         return result
 
+    def _should_auto_start_combat(
+        self,
+        player_input: str,
+        game_session: Session,
+        adventure_state: Dict[str, Any],
+        adventure_context: str,
+    ) -> bool:
+        """Detect if combat should automatically start based on context.
+
+        Returns True if:
+        1. Not already in combat
+        2. Player action suggests initiating combat OR entering a location with enemies
+        3. Current location has a fixed encounter
+        """
+        # Already in combat - no need to auto-start
+        if game_session.active_combat_id:
+            return False
+
+        game_state = game_session.game_state or {}
+        if game_state.get("in_combat"):
+            return False
+
+        player_lower = player_input.lower()
+
+        # Combat initiation keywords
+        combat_keywords = [
+            "attack", "fight", "strike", "stab", "swing", "hit", "charge",
+            "rush at", "rush into", "engage", "battle", "slay", "kill",
+            "shoot", "fire at", "fire my", "cast at", "fireball", "magic missile",
+            "draw my sword", "draw my weapon", "ready my weapon",
+            "i want combat", "looking for a fight", "find enemies",
+        ]
+
+        player_initiates_combat = any(kw in player_lower for kw in combat_keywords)
+
+        # Check if current location has creatures/enemies in context
+        context_lower = adventure_context.lower() if adventure_context else ""
+        has_enemies_in_context = any(term in context_lower for term in [
+            "creature", "monster", "enemy", "enemies", "guard", "guards",
+            "orc", "goblin", "skeleton", "zombie", "troll", "ogre",
+            "attack", "hostile", "lair", "den", "lurk", "ambush",
+        ])
+
+        # Need both player combat intent AND enemies present
+        if player_initiates_combat and has_enemies_in_context:
+            # Check if location has a fixed encounter in the module
+            location_key = adventure_state.get("current_location_key")
+            if location_key:
+                logger.info(f"[COMBAT] Auto-start check: player_combat={player_initiates_combat}, "
+                           f"enemies_present={has_enemies_in_context}, location={location_key}")
+                return True
+
+        return False
+
+    async def _auto_start_encounter(
+        self,
+        game_session: Session,
+        character: Character,
+        adventure_state: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Automatically start an encounter from the current location.
+
+        Returns the encounter start result, or None if it failed.
+        """
+        location_key = adventure_state.get("current_location_key")
+        location_name = adventure_state.get("current_location", "Unknown Location")
+
+        logger.info(f"[COMBAT] Auto-starting encounter at location {location_key}: {location_name}")
+
+        # Call the tool handler directly
+        result = await self.tool_handler.execute(
+            tool_name="start_encounter",
+            tool_input={
+                "encounter_name": f"Combat at {location_name}",
+                "source": "fixed",  # Use fixed encounter from module
+            },
+            character=character,
+            session=game_session,
+        )
+
+        if result.get("error"):
+            logger.warning(f"[COMBAT] Auto-start failed: {result.get('error')}")
+            return None
+
+        logger.info(f"[COMBAT] Auto-started encounter: {result.get('encounter_name')} - "
+                   f"initiative: {result.get('initiative_order')}")
+        return result
+
     async def process_player_action(
         self,
         game_session: Session,
@@ -120,6 +223,7 @@ class DMService:
         # Debug logging for location tracking
         logger.info(f"[DM] current_location_key={adventure_state.get('current_location_key')}, current_location={adventure_state.get('current_location')}")
 
+        module = None  # Adventure module, loaded for sub-agent use
         if campaign and campaign.adventure_document_id:
             # Get adventure-specific content
             adventure_doc = await self.adventure_planner.get_adventure_document(
@@ -127,18 +231,30 @@ class DMService:
             )
             adventure_title = adventure_doc.title if adventure_doc else "Adventure"
 
+            # Load module for sub-agents (subarea, combat auto-start, etc.)
+            adventure_retriever = AdventureDataRetriever(self.db)
+            module = await adventure_retriever.get_module_for_document(campaign.adventure_document_id)
+
             # Get parsed structured adventure data (locations, NPCs, etc.)
-            structured_content = await self._get_structured_adventure_context(
+            # Returns (content, used_graph_rag) - when GraphRAG is used, it provides
+            # authoritative location-specific data and we should skip RAG to avoid
+            # cross-contamination from chunks belonging to other locations
+            structured_content, used_graph_rag = await self._get_structured_adventure_context(
                 campaign.adventure_document_id,
                 adventure_state,
                 player_input,
             )
 
-            # ALWAYS also get RAG content to supplement structured data
-            # This ensures we capture details like traps, secrets, and full descriptions
-            # that may not have been fully extracted during parsing
+            # Check if this is an opening scene (needs broader RAG context)
             is_opening = any(kw in player_input.lower() for kw in
                 ["begin", "start", "new adventure", "opening", "first scene", "set the scene"])
+
+            # Only fetch RAG content when:
+            # 1. Opening scene (needs physical descriptions, entrance, lore)
+            # 2. GraphRAG was NOT used (fallback to RAG for supplementary details)
+            # When GraphRAG IS used, skip RAG to prevent hallucinating creatures/items
+            # from other locations in the module
+            rag_content = ""
 
             if is_opening:
                 # For opening scenes, get multiple specific queries to ensure we capture:
@@ -147,9 +263,7 @@ class DMService:
                 # 3. Background/setting lore
                 rag_parts = []
 
-                # Get adventure module title for more targeted queries
-                adventure_retriever = AdventureDataRetriever(self.db)
-                module = await adventure_retriever.get_module_for_document(campaign.adventure_document_id)
+                # Use already-loaded module for targeted queries
                 module_title = module.title if module else "dungeon"
 
                 # Query 1: Physical description and exterior
@@ -184,9 +298,10 @@ class DMService:
 
                 rag_content = "\n\n---\n\n".join(rag_parts) if rag_parts else ""
                 logger.info(f"[DM] Opening scene RAG: {len(rag_parts)} chunks retrieved")
-            else:
-                # For non-opening scenes, filter RAG to current location to prevent
-                # retrieving contradictory content from other areas
+            elif not used_graph_rag:
+                # Only use RAG when GraphRAG is NOT available
+                # When GraphRAG IS used, it provides authoritative location-specific data
+                # and RAG could introduce creatures/items from OTHER locations (hallucination source)
                 current_location_key = adventure_state.get("current_location_key")
                 current_location = adventure_state.get("current_location", "")
 
@@ -197,7 +312,7 @@ class DMService:
                 else:
                     query_text = f"{player_input} {current_location}".strip()
 
-                logger.info(f"[DM] RAG query: {query_text[:100]}...")
+                logger.info(f"[DM] RAG query (GraphRAG unavailable): {query_text[:100]}...")
 
                 # Get raw PDF content via RAG for full details
                 # Limit to 3 chunks to reduce noise from other locations
@@ -207,6 +322,8 @@ class DMService:
                     current_location=current_location,
                     max_chunks=3,
                 )
+            else:
+                logger.info(f"[DM] Skipping RAG - GraphRAG provided authoritative location context")
 
             # Combine structured and RAG content
             if structured_content and rag_content:
@@ -220,6 +337,182 @@ class DMService:
                 adventure_state=adventure_state,
                 adventure_content=adventure_content,
             )
+
+        # LOCATION AGENT: Detect movement and force location updates
+        # This ensures proper location tracking even if LLM forgets to call update_adventure_location
+        location_context = ""
+        if campaign and campaign.adventure_document_id:
+            previous_location = adventure_state.get("current_location")
+            location_result = await self.location_agent.handle_movement(
+                player_input=player_input,
+                character=character,
+                session=game_session,
+                adventure_document_id=str(campaign.adventure_document_id),
+            )
+
+            if location_result and not location_result.get("error"):
+                # Yield the location update to frontend
+                yield {
+                    "type": "tool_result",
+                    "tool_name": "update_adventure_location",
+                    "result": location_result,
+                }
+
+                # Update adventure_state with new location (for subsequent processing)
+                adventure_state = game_session.adventure_state or {}
+                new_location = location_result.get("location", "")
+                new_location_key = location_result.get("location_key", "")
+
+                # Add context for DM
+                location_context = f"""
+## LOCATION TRANSITION (auto-detected)
+Player moved from: {previous_location or 'unknown'}
+Player is now at: {new_location} (key: {new_location_key})
+
+Describe this new location. Do NOT call update_adventure_location - it has already been called.
+"""
+                logger.info(f"[LOCATION] Auto-updated: {previous_location} -> {new_location}")
+
+                # Auto-initialize entry sub-area if new location has sub-areas
+                if new_location_key and module:
+                    entry_result = await self.subarea_agent.auto_init_entry_subarea(
+                        location_key=new_location_key,
+                        character=character,
+                        session=game_session,
+                        module_id=str(module.id),
+                    )
+                    if entry_result and not entry_result.get("error"):
+                        # Update adventure_state after sub-area init
+                        adventure_state = game_session.adventure_state or {}
+                        logger.info(f"[SUBAREA] Auto-initialized entry sub-area: {entry_result.get('subarea_name')}")
+
+        # SUBAREA AGENT: Detect intra-location movement and force sub-area transitions
+        # This ensures progressive reveal works even if LLM forgets to call update_subarea_position
+        subarea_context = ""
+        if campaign and campaign.adventure_document_id and module:
+            subarea_result = await self.subarea_agent.handle_subarea_progression(
+                player_input=player_input,
+                character=character,
+                session=game_session,
+                module_id=str(module.id),
+            )
+            if subarea_result and not subarea_result.get("error"):
+                yield {
+                    "type": "tool_result",
+                    "tool_name": "update_subarea_position",
+                    "result": subarea_result,
+                }
+                # Update adventure_state after sub-area change
+                adventure_state = game_session.adventure_state or {}
+                subarea_context = self.subarea_agent.format_subarea_context(subarea_result)
+                logger.info(f"[SUBAREA] Auto-advanced to: {subarea_result.get('subarea_name')}")
+
+        # LOOT AGENT: Detect item pickup and force add_item calls
+        loot_context = ""
+        loot_results = await self.loot_agent.handle_loot(
+            player_input=player_input,
+            character=character,
+            session=game_session,
+        )
+        if loot_results:
+            for loot_result in loot_results:
+                yield loot_result
+            loot_context = self.loot_agent.format_loot_context(loot_results)
+            logger.info(f"[LOOT] Auto-added {len(loot_results)} items")
+
+        # TIME AGENT: Detect rest/travel and force advance_time calls
+        time_result_context = ""
+        time_result = await self.time_agent.handle_time_passage(
+            player_input=player_input,
+            character=character,
+            session=game_session,
+        )
+        if time_result:
+            yield {
+                "type": "tool_result",
+                "tool_name": "advance_time",
+                "result": time_result,
+            }
+            # Also yield healing result separately so frontend can update HP display
+            if time_result.get("healing"):
+                yield {
+                    "type": "tool_result",
+                    "tool_name": "apply_damage_or_healing",
+                    "result": {
+                        "target": character.name,
+                        "amount": time_result["healing"].get("healed", 0),
+                        "is_healing": True,
+                        "new_hp": time_result["healing"].get("new_hp"),
+                        "max_hp": time_result["healing"].get("max_hp"),
+                        "reason": "natural rest",
+                        "visible": True,
+                    },
+                }
+                logger.info(f"[TIME] Rest healing: +{time_result['healing'].get('healed', 0)} HP")
+            time_result_context = self.time_agent.format_time_context(time_result)
+            logger.info(f"[TIME] Auto-advanced time: {time_result.get('hours_passed', 0)}h {time_result.get('days_passed', 0)}d")
+
+        # SPELL AGENT: Detect spell casting and enforce slot tracking
+        spell_context = ""
+        spell_result = await self.spell_agent.handle_spell_cast(
+            player_input=player_input,
+            character=character,
+            session=game_session,
+        )
+        if spell_result:
+            # Yield spell slot update to frontend so UI can update
+            yield {
+                "type": "tool_result",
+                "tool_name": "use_spell_slot",
+                "result": {
+                    "spell_name": spell_result.get("spell_name"),
+                    "spell_level": spell_result.get("spell_level"),
+                    "success": spell_result.get("success"),
+                    "slots_remaining": spell_result.get("slots_remaining"),
+                    "slots_total": spell_result.get("slots_total"),
+                    "error": spell_result.get("error"),
+                    "visible": True,
+                },
+            }
+            spell_context = self.spell_agent.format_spell_context(spell_result)
+            if spell_result.get("success"):
+                logger.info(f"[SPELL] Cast {spell_result.get('spell_name')} - "
+                           f"{spell_result.get('slots_remaining')}/{spell_result.get('slots_total')} slots remaining")
+            else:
+                logger.info(f"[SPELL] Failed to cast {spell_result.get('spell_name')}: {spell_result.get('error')}")
+
+        # AUTO-START COMBAT: Detect and automatically start encounters when needed
+        # This ensures proper initiative and combat tracking even if LLM forgets to call start_encounter
+        if campaign and campaign.adventure_document_id:
+            if self._should_auto_start_combat(player_input, game_session, adventure_state, adventure_context):
+                auto_combat_result = await self._auto_start_encounter(
+                    game_session, character, adventure_state
+                )
+                if auto_combat_result:
+                    # Yield the combat start as a tool result to the frontend
+                    yield {
+                        "type": "tool_result",
+                        "tool_name": "start_encounter",
+                        "result": auto_combat_result,
+                    }
+                    # Format initiative announcement for context
+                    init_order = auto_combat_result.get("initiative_order", [])
+                    player_init = auto_combat_result.get("player_initiative", 0)
+                    is_player_first = auto_combat_result.get("is_player_turn", False)
+                    enemies = auto_combat_result.get("enemies", [])
+
+                    combat_announcement = f"""
+**COMBAT INITIATED AUTOMATICALLY**
+Initiative: {character.name} rolled {player_init}
+Turn order: {', '.join(init_order)}
+{"You act first!" if is_player_first else "The enemies act first!"}
+Enemies: {', '.join(e['name'] + f" (HP: {e['hp']}, AC: {e['ac']})" for e in enemies)}
+
+Continue the narrative describing this combat. The player {"has the first action" if is_player_first else "must react to enemy attacks first"}.
+"""
+                    # Add to adventure context so LLM knows combat has started
+                    adventure_context += f"\n\n## COMBAT JUST STARTED\n{combat_announcement}"
+                    logger.info(f"[COMBAT] Auto-started combat injected into context")
 
         # Get prior session context for continuity
         journal_context = await self._get_journal_context(
@@ -237,6 +530,17 @@ class DMService:
 
         # Build system prompt
         logger.info("[DM] Building system prompt...")
+
+        # Get DM style: campaign override > global setting
+        dm_style = ""
+        if campaign and campaign.settings:
+            dm_style = campaign.settings.get("dm_style", "")
+        if not dm_style:
+            from app.config import settings as app_settings
+            dm_style = app_settings.dm_style or ""
+        if dm_style:
+            logger.info(f"[DM] Using DM style: {dm_style}")
+
         system_prompt = build_dm_system_prompt(
             rpg_system="bx-dnd",  # TODO: Get from character/campaign
             rules_context=rag_context,
@@ -246,12 +550,64 @@ class DMService:
             journal_context=journal_context,
             time_context=time_context,
             rulebook_markdown=rulebook_markdown,
+            dm_style=dm_style,
         )
         logger.info(f"[DM] System prompt built - {len(system_prompt)} chars")
+
+        # Inject active combat context if in combat
+        combat_context = await self._get_combat_context(game_session, character)
+        if combat_context:
+            system_prompt += f"\n\n## ACTIVE COMBAT STATE\n{combat_context}\n"
+            logger.info("[DM] Injected active combat context into system prompt")
 
         # Build conversation history
         messages = await self._build_messages(game_session, player_input)
         logger.info(f"[DM] Built {len(messages)} messages for LLM")
+
+        # Add map images if available (for adventure modules)
+        if campaign and campaign.adventure_document_id:
+            messages = await self._add_map_images_to_messages(
+                messages,
+                campaign.adventure_document_id,
+                adventure_state,
+            )
+
+        # COMBAT AGENT: If in active combat and player takes combat action,
+        # use the combat agent to enforce proper mechanics
+        combat_result_context = ""
+        if game_session.active_combat_id:
+            combat_state = await self._load_combat_state(game_session, character)
+            if combat_state and combat_state.is_active:
+                # Parse player action to see if it's a combat action
+                combat_action = self.combat_agent.parse_player_action(player_input, character)
+
+                if combat_action.action_type in ("attack", "cast", "flee", "defend"):
+                    logger.info(f"[COMBAT AGENT] Handling combat action: {combat_action.action_type}")
+
+                    # Resolve combat using the agent (yields tool results)
+                    combat_result = None
+                    async for tool_result in self.combat_agent.resolve_combat_round(
+                        combat_action, character, game_session, combat_state
+                    ):
+                        # Capture the final combat result
+                        if isinstance(tool_result, dict):
+                            if tool_result.get("type") == "combat_result":
+                                combat_result = tool_result.get("result")
+                            else:
+                                # Yield other tool results to frontend
+                                yield tool_result
+
+                    # Get formatted results for DM to narrate
+                    if combat_result:
+                        combat_result_context = self.combat_agent.format_combat_result_for_dm(
+                            combat_result, character
+                        )
+                        logger.info(f"[COMBAT AGENT] Combat resolved - hit: {combat_result.player_hit}, damage: {combat_result.player_damage}")
+                    else:
+                        # Fallback context
+                        combat_result_context = "\n## COMBAT RESOLVED\nCombat mechanics have been processed. Narrate the results dramatically."
+
+                    logger.info(f"[COMBAT AGENT] Adding combat results to DM context")
 
         # Determine which tools to use (add adventure tools if adventure is active)
         tools = list(DM_TOOLS)
@@ -259,8 +615,34 @@ class DMService:
         tools.extend(SOLO_HERO_TOOLS)  # Solo Hero rules for single-character play
         tools.extend(CALENDAR_TOOLS)  # Calendar and time tracking tools
         tools.extend(MAP_TOOLS)  # Dungeon map tools
+        tools.extend(ENCOUNTER_TOOLS)  # Persistent encounter tracking tools
+        tools.extend(IMAGE_TOOLS)  # Atmospheric image display
         if campaign and campaign.adventure_document_id:
             tools.extend(ADVENTURE_TOOLS)
+
+        # Add location transition context if movement was auto-detected
+        if location_context:
+            system_prompt += f"\n\n{location_context}\n"
+
+        # Add sub-area progression context if sub-area was auto-advanced
+        if subarea_context:
+            system_prompt += f"\n\n{subarea_context}\n"
+
+        # Add loot context if items were auto-added
+        if loot_context:
+            system_prompt += f"\n\n{loot_context}\n"
+
+        # Add time context if time was auto-advanced
+        if time_result_context:
+            system_prompt += f"\n\n{time_result_context}\n"
+
+        # Add spell context if spell was cast
+        if spell_context:
+            system_prompt += f"\n\n{spell_context}\n"
+
+        # Add combat result context if combat was resolved
+        if combat_result_context:
+            system_prompt += f"\n\n{combat_result_context}\n"
 
         # Track all tool calls and responses across the conversation loop
         all_tool_calls = []
@@ -295,6 +677,27 @@ class DMService:
                     tool_call = event["tool_use"]
                     current_tool_calls.append(tool_call)
                     all_tool_calls.append(tool_call)
+
+                    # Block duplicate update_subarea_position calls if subarea agent already handled it
+                    if tool_call["name"] == "update_subarea_position" and subarea_context:
+                        logger.info(f"[DM] Blocking duplicate update_subarea_position (already handled by subarea agent)")
+                        result = {"skipped": True, "reason": "Sub-area already updated by subarea agent", "visible": False}
+                        tool_call["result"] = result
+                        continue
+
+                    # Block duplicate add_item calls if loot agent already handled it
+                    if tool_call["name"] == "add_item" and loot_results:
+                        # Check if this item was already added by loot agent
+                        item_name = tool_call["input"].get("item_name", "").lower()
+                        already_added = any(
+                            lr.get("result", {}).get("item", {}).get("name", "").lower() == item_name
+                            for lr in loot_results
+                        )
+                        if already_added:
+                            logger.info(f"[DM] Blocking duplicate add_item for: {item_name} (already added by loot agent)")
+                            result = {"skipped": True, "reason": "Item already added by loot agent", "visible": False}
+                            tool_call["result"] = result
+                            continue
 
                     # Execute tool
                     result = await self.tool_handler.execute(
@@ -355,6 +758,31 @@ class DMService:
                         break
                     else:
                         # Stop reason is end_turn or other - we're done
+
+                        # Ensure damage mentioned in narrative is applied
+                        try:
+                            damage_result = self.damage_extractor.extract(
+                                full_response,
+                                all_tool_calls,
+                                player_name=character.name,
+                            )
+                            if damage_result.needs_application:
+                                applied_events = await self.damage_extractor.auto_apply(
+                                    damage_result, character, game_session
+                                )
+                                # Yield damage events so frontend can update HP display
+                                for event in applied_events:
+                                    yield {
+                                        "type": "tool_result",
+                                        "tool_name": "apply_damage_or_healing",
+                                        "result": {
+                                            **event,
+                                            "visible": True,
+                                        },
+                                    }
+                        except Exception as e:
+                            logger.warning(f"[DM] Error applying damage: {e}")
+
                         await self._save_messages(
                             game_session,
                             player_input,
@@ -421,6 +849,77 @@ class DMService:
         })
 
         return messages
+
+    async def _add_map_images_to_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        document_id: UUID,
+        adventure_state: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Add dungeon map images to messages for spatial context.
+
+        Args:
+            messages: Current message list
+            document_id: Adventure document ID
+            adventure_state: Current adventure state
+
+        Returns:
+            Updated message list with map images prepended
+        """
+        # Check if maps already loaded in this session (avoid reloading every turn)
+        # We store a flag to avoid repeatedly loading large images
+        if adventure_state.get("_maps_loaded_this_session"):
+            return messages
+
+        # Get map images for this adventure
+        retriever = AdventureDataRetriever(self.db)
+        maps = await retriever.get_module_maps(document_id)
+
+        if not maps:
+            logger.info("[DM] No map images found for adventure module")
+            return messages
+
+        logger.info(f"[DM] Found {len(maps)} map images for module")
+
+        # Load the first/primary map image (usually the dungeon overview)
+        # Limit to 1-2 maps to avoid context bloat
+        map_content_blocks = []
+        maps_to_load = maps[:2]  # Load at most 2 maps
+
+        for map_info in maps_to_load:
+            image_block = load_image_as_base64(map_info["path"])
+            if image_block:
+                # Add a text description before the image
+                map_title = map_info.get("title", "Dungeon Map")
+                map_content_blocks.append({
+                    "type": "text",
+                    "text": f"[DUNGEON MAP: {map_title}]\nUse this map for spatial understanding. Room numbers correspond to location keys."
+                })
+                map_content_blocks.append(image_block)
+                logger.info(f"[DM] Loaded map image: {map_title}")
+
+        if not map_content_blocks:
+            logger.warning("[DM] Failed to load any map images")
+            return messages
+
+        # Insert map images as the first message (user role with image)
+        # This ensures the LLM sees the map before any conversation
+        map_message = {
+            "role": "user",
+            "content": map_content_blocks,
+        }
+
+        # Also need an assistant acknowledgment to maintain conversation structure
+        ack_message = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I can see the dungeon map. I will use it for navigation and spatial descriptions."}],
+        }
+
+        # Prepend map and acknowledgment to messages
+        new_messages = [map_message, ack_message] + messages
+
+        logger.info(f"[DM] Added map images to messages (new total: {len(new_messages)})")
+        return new_messages
 
     async def _save_messages(
         self,
@@ -520,34 +1019,9 @@ class DMService:
         message_count = len(game_session.messages) + 2 if game_session.messages else 2
         adventure_state["message_count"] = message_count
 
-        # Extract and track any locations mentioned in the DM response
-        # This provides backup context if update_adventure_location wasn't called
-        if dm_response:
-            # Try to detect location from common patterns
-            import re
-            location_patterns = [
-                # Explicit movement patterns
-                r"you (?:enter|arrive at|reach|find yourself in|stand (?:at|in|before)|are (?:now )?in) (?:the )?([A-Z][^.!?]{3,50})",
-                r"welcome to (?:the )?([A-Z][^.!?]{3,50})",
-                # Scenic descriptions
-                r"(?:the |this )([A-Z][^.!?]{3,40}) (?:is|appears|stretches|lies|opens)",
-                # Area descriptions like "The Ravine", "The Cave Entrance"
-                r"entering (?:the )?([A-Z][^.!?]{3,40})",
-                r"inside (?:the )?([A-Z][^.!?]{3,40})",
-            ]
-            for pattern in location_patterns:
-                match = re.search(pattern, dm_response, re.IGNORECASE)
-                if match:
-                    detected_location = match.group(1).strip().rstrip('.,;:')
-                    # Clean up common artifacts
-                    detected_location = detected_location.split(' - ')[0].strip()
-                    if len(detected_location) > 3 and len(detected_location) < 60:
-                        # Save to both current_location and detected_location
-                        adventure_state["current_location"] = detected_location
-                        adventure_state["detected_location"] = detected_location
-                        # Also update the session's current_location field
-                        game_session.current_location = detected_location
-                        break
+        # NOTE: Location tracking is now handled exclusively by the update_adventure_location tool.
+        # Auto-detection from DM response was too error-prone (matched garbage text).
+        # The LLM is instructed to call update_adventure_location when the player moves.
 
         # Save updated state
         game_session.adventure_state = adventure_state
@@ -613,6 +1087,146 @@ class DMService:
             # If calendar doesn't exist yet, return empty context
             return {}
 
+    async def _get_combat_context(
+        self,
+        game_session: Session,
+        character: Character,
+    ) -> str:
+        """Get formatted combat context if an encounter is active.
+
+        Loads CombatEncounter + participants from DB and formats
+        for injection into the system prompt.
+        """
+        if not game_session.active_combat_id:
+            return ""
+
+        from app.domains.combat.models import (
+            CombatEncounter, CombatParticipant, CombatStatus, ParticipantType,
+        )
+        from app.domains.combat.manager import CombatManager, CombatState, EnemyStats
+
+        try:
+            result = await self.db.execute(
+                select(CombatEncounter)
+                .options(selectinload(CombatEncounter.participants))
+                .where(CombatEncounter.id == game_session.active_combat_id)
+            )
+            encounter = result.scalar_one_or_none()
+
+            if not encounter or encounter.status != CombatStatus.ACTIVE:
+                return ""
+
+            # Reconstruct CombatState from DB records
+            state = CombatState(
+                round_number=encounter.current_round,
+                is_active=True,
+                initiative_order=[p.name for p in encounter.participants],
+            )
+
+            for p in encounter.participants:
+                if p.participant_type == ParticipantType.PLAYER:
+                    continue
+                enemy = EnemyStats(
+                    name=p.name,
+                    hd=int(p.stats.get("hd", 1) or 1) if p.stats else 1,
+                    hp=p.current_hp,
+                    max_hp=p.max_hp,
+                    ac=p.armor_class or 9,
+                    thac0=p.thac0 or 19,
+                    damage=str(p.stats.get("damage", "1d6") or "1d6") if p.stats else "1d6",
+                    morale=p.morale or 7,
+                    xp_value=int(p.stats.get("xp_value", 0) or 0) if p.stats else 0,
+                )
+                state.enemies[p.name] = enemy
+
+                if p.current_hp <= 0:
+                    state.defeated_enemies.append(p.name)
+                elif p.morale_broken:
+                    state.fled_enemies.append(p.name)
+
+            # Determine current turn
+            if encounter.current_turn_index < len(state.initiative_order):
+                state.current_turn = state.initiative_order[encounter.current_turn_index]
+                state.is_player_turn = state.current_turn == character.name
+
+            # Use CombatManager's formatter
+            manager = CombatManager(self.db)
+            return manager.get_combat_context(state, character)
+
+        except Exception as e:
+            logger.warning(f"[DM] Failed to load combat context: {e}")
+            return ""
+
+    async def _load_combat_state(
+        self,
+        game_session: Session,
+        character: Character,
+    ) -> Optional["CombatState"]:
+        """Load the current combat state from the database.
+
+        Returns CombatState object or None if no active combat.
+        """
+        if not game_session.active_combat_id:
+            return None
+
+        from app.domains.combat.models import (
+            CombatEncounter, CombatParticipant, CombatStatus, ParticipantType,
+        )
+        from app.domains.combat.manager import CombatState, EnemyStats
+
+        try:
+            result = await self.db.execute(
+                select(CombatEncounter)
+                .options(selectinload(CombatEncounter.participants))
+                .where(CombatEncounter.id == game_session.active_combat_id)
+            )
+            encounter = result.scalar_one_or_none()
+
+            if not encounter or encounter.status != CombatStatus.ACTIVE:
+                return None
+
+            # Reconstruct CombatState from DB records
+            state = CombatState(
+                round_number=encounter.current_round,
+                is_active=True,
+                initiative_order=[p.name for p in encounter.participants],
+            )
+
+            for p in encounter.participants:
+                if p.participant_type == ParticipantType.PLAYER:
+                    # Store player initiative
+                    state.player_initiative = p.initiative or 0
+                    continue
+
+                enemy = EnemyStats(
+                    name=p.name,
+                    hd=int(p.stats.get("hd", 1) or 1) if p.stats else 1,
+                    hp=p.current_hp,
+                    max_hp=p.max_hp,
+                    ac=p.armor_class or 9,
+                    thac0=p.thac0 or 19,
+                    damage=str(p.stats.get("damage", "1d6") or "1d6") if p.stats else "1d6",
+                    morale=p.morale or 7,
+                    xp_value=int(p.stats.get("xp_value", 0) or 0) if p.stats else 0,
+                )
+                state.enemies[p.name] = enemy
+
+                if p.current_hp <= 0:
+                    state.defeated_enemies.append(p.name)
+                elif p.morale_broken:
+                    state.fled_enemies.append(p.name)
+
+            # Determine current turn
+            if encounter.current_turn_index < len(state.initiative_order):
+                state.current_turn = state.initiative_order[encounter.current_turn_index]
+                state.is_player_turn = state.current_turn == character.name
+
+            return state
+
+        except Exception as e:
+            logger.warning(f"[DM] Failed to load combat state: {e}")
+            return None
+
     async def _get_rulebook_markdown(
         self,
         rpg_system_id: UUID,
@@ -620,9 +1234,44 @@ class DMService:
     ) -> str:
         """Load rulebook markdown for the character's RPG system.
 
-        Returns formatted markdown content from uploaded rulebooks.
+        Returns formatted markdown content from:
+        1. Static rules reference for the specific RPG system (e.g., bx-dnd-rules.md)
+        2. Any user-uploaded rulebooks for this system
         """
-        # Get rulebooks for this system
+        from app.domains.campaigns.models import RPGSystem
+
+        content_parts = []
+        total_length = 0
+
+        # Get the RPG system code to load the correct rules file
+        system_code = "bx-dnd"  # Default fallback
+        try:
+            result = await self.db.execute(
+                select(RPGSystem).where(RPGSystem.id == rpg_system_id)
+            )
+            rpg_system = result.scalar_one_or_none()
+            if rpg_system:
+                system_code = rpg_system.code
+        except Exception as e:
+            logger.warning(f"Failed to lookup RPG system: {e}")
+
+        # Load the static rules file for this system
+        # Files are named: {system_code}-rules.md (e.g., bx-dnd-rules.md, ose-rules.md)
+        static_rules_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "rules", f"{system_code}-rules.md"
+        )
+        if os.path.exists(static_rules_path):
+            try:
+                with open(static_rules_path, 'r', encoding='utf-8') as f:
+                    static_rules = f.read()
+                content_parts.append(static_rules)
+                total_length += len(static_rules)
+                logger.info(f"Loaded static {system_code} rules reference ({len(static_rules)} chars)")
+            except Exception as e:
+                logger.warning(f"Failed to load static rules for {system_code}: {e}")
+
+        # Get user-uploaded rulebooks for this system
         try:
             # Query without status filter first, then filter in Python
             # This avoids enum type casting issues with PostgreSQL
@@ -636,16 +1285,10 @@ class DMService:
             # Filter for completed status in Python
             rulebooks = [r for r in all_rulebooks if str(r.status.value if hasattr(r.status, 'value') else r.status) == "completed"]
         except Exception as e:
-            logger.warning(f"Failed to load rulebook markdown: {e}")
-            return ""
+            logger.warning(f"Failed to query rulebooks: {e}")
+            rulebooks = []
 
-        if not rulebooks:
-            return ""
-
-        # Load markdown from each rulebook
-        content_parts = []
-        total_length = 0
-
+        # Load markdown from each user-uploaded rulebook
         for doc in rulebooks:
             if doc.markdown_path and os.path.exists(doc.markdown_path):
                 try:
@@ -677,10 +1320,14 @@ class DMService:
         document_id: UUID,
         adventure_state: Dict[str, Any],
         player_input: str,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], bool]:
         """Get structured adventure context from parsed module data.
 
-        Returns formatted context string if parsed data exists, None otherwise.
+        Returns:
+            Tuple of (formatted context string or None, whether GraphRAG was used).
+            When GraphRAG is used, the context is authoritative and location-specific,
+            so additional RAG lookups should be skipped to avoid cross-contamination
+            from other locations.
         """
         import json
 
@@ -692,11 +1339,12 @@ class DMService:
         logger.info(f"[DM] Module lookup result: {module.title if module else 'None'}")
 
         if not module:
-            return None
+            return None, False
 
         # Build rich context from structured data
         context_parts = []
         full_markdown_text = ""  # Store for extracting current location verbatim text
+        used_graph_rag = False  # Track if GraphRAG provided authoritative location data
 
         # Load full module markdown for extracting verbatim location text
         # NOTE: We don't dump the entire markdown into context (too large, causes "lost in middle" problem)
@@ -717,6 +1365,9 @@ class DMService:
                 context_parts.append(f"Module Code: {summary['code']}")
             if summary.get('recommended_levels'):
                 context_parts.append(f"Recommended Levels: {summary['recommended_levels']}")
+            if summary.get('recommended_party_size'):
+                party_size = summary['recommended_party_size']
+                context_parts.append(f"Original Party Size: {party_size} (this module was designed for a GROUP - you are adapting it for ONE solo hero)")
             if summary.get('summary'):
                 context_parts.append(f"\n{summary['summary']}")
 
@@ -755,10 +1406,61 @@ class DMService:
         current_location = adventure_state.get("current_location", "")
 
         if current_location_key:
-            location_context = await retriever.get_location_context(module.id, current_location_key)
-            if location_context:
-                # Pass full markdown so we can extract verbatim text for this location
-                context_parts.append(self._format_location_context(location_context, full_markdown_text))
+            # Try GraphRAG context first (structured facts, not prose)
+            use_graph_rag = adventure_state.get("use_graph_rag", True)
+            graph_context = None
+
+            if use_graph_rag:
+                try:
+                    graph_provider = GraphContextProvider(self.db)
+                    # Pass sub-area state for progressive reveal
+                    current_subarea = adventure_state.get("current_subarea")
+                    subareas_visited = adventure_state.get("subareas_visited", [])
+                    triggered_content = adventure_state.get("triggered_content", [])
+
+                    graph_context = await graph_provider.get_location_context(
+                        module.id,
+                        current_location_key,
+                        current_subarea=current_subarea,
+                        subareas_visited=subareas_visited,
+                        triggered_content=triggered_content,
+                    )
+                    if graph_context:
+                        logger.info(f"[DM] Using GraphRAG context for location {current_location_key} (subarea: {current_subarea})")
+                        context_parts.append(graph_context)
+                        used_graph_rag = True  # Mark that we have authoritative location data
+
+                        # CRITICAL: Always inject source_text from DB alongside GraphRAG
+                        # GraphRAG descriptions may be truncated; source_text has the FULL module text
+                        location_data = await retriever.get_location_context(module.id, current_location_key)
+                        if location_data:
+                            loc = location_data.get("location", {})
+                            source_text = loc.get("source_text")
+                            if source_text and len(source_text) > 300:
+                                source_text = self._transform_party_to_solo(source_text)
+                                context_parts.append("\n### EXACT MODULE TEXT (AUTHORITATIVE - use for ALL details):")
+                                context_parts.append(source_text)
+                                context_parts.append("--- END MODULE TEXT ---")
+                                logger.info(f"[DM] Injected source_text ({len(source_text)} chars) alongside GraphRAG")
+                except Exception as e:
+                    logger.warning(f"[DM] GraphRAG failed, falling back to prose context: {e}")
+                    graph_context = None
+
+            # Fall back to prose-based context if GraphRAG unavailable
+            if not graph_context:
+                location_context = await retriever.get_location_context(module.id, current_location_key)
+                # Also get adjacent locations for spatial context
+                adjacent_locations = await retriever.get_adjacent_locations(module.id, current_location_key)
+                # Get populated room content for B1-style modules
+                populated_content = adventure_state.get("populated_rooms", {}).get(current_location_key)
+                if location_context:
+                    # Pass full markdown so we can extract verbatim text for this location
+                    context_parts.append(self._format_location_context(
+                        location_context,
+                        full_markdown_text,
+                        adjacent_locations=adjacent_locations,
+                        populated_content=populated_content,
+                    ))
 
         # Get wandering monster table for current area
         current_tier = adventure_state.get("current_tier")
@@ -796,7 +1498,59 @@ class DMService:
                         if enc.get("creatures"):
                             context_parts.append(f"Creatures: {json.dumps(enc['creatures'])}")
 
-        return "\n".join(context_parts) if context_parts else None
+        content = "\n".join(context_parts) if context_parts else None
+        return content, used_graph_rag
+
+    def _extract_triggered_events(self, verbatim_text: str) -> List[Dict[str, Any]]:
+        """Extract triggered events (magic mouths, etc.) from location text.
+
+        These are events that MUST fire when conditions are met.
+        """
+        import re
+        events = []
+
+        if not verbatim_text:
+            return events
+
+        text_lower = verbatim_text.lower()
+
+        # Check for magic mouth
+        if "magic mouth" in text_lower:
+            event = {
+                "type": "magic_mouth",
+                "trigger": "When player reaches this location",
+                "dialogue": [],
+                "notes": "",
+            }
+
+            # Extract quoted dialogue - look for ALL CAPS quoted text
+            # B1 format: "WHO DARES ENTER THIS PLACE..."
+            dialogue_pattern = r'"([A-Z][A-Z\s\-—\'!?,\.]+)"'
+            matches = re.findall(dialogue_pattern, verbatim_text)
+            if matches:
+                event["dialogue"] = matches
+
+            # Look for sequence notes
+            if "east mouth" in text_lower and "west mouth" in text_lower:
+                event["notes"] = "East mouth speaks first, then west mouth replies, then both speak in unison, then laughter fades."
+            elif "in unison" in text_lower:
+                event["notes"] = "Multiple voices speak in unison."
+
+            if "laughter" in text_lower:
+                if "fades" in text_lower:
+                    event["dialogue"].append("[LOUD LAUGHTER that fades away]")
+                else:
+                    event["dialogue"].append("[LAUGHTER]")
+
+            events.append(event)
+
+        # Check for other triggered events
+        if "triggered" in text_lower or "when" in text_lower and ("enter" in text_lower or "reach" in text_lower):
+            # Generic triggered event detection
+            # Look for patterns like "When X happens, Y occurs"
+            pass  # Could expand this for other event types
+
+        return events
 
     def _extract_location_from_markdown(self, full_markdown: str, location_key: str) -> Optional[str]:
         """Extract the specific location text from full markdown.
@@ -838,12 +1592,20 @@ class DMService:
         logger.warning(f"[DM] Could not extract location {location_key} from full markdown")
         return None
 
-    def _format_location_context(self, context: Dict[str, Any], full_markdown: str = "") -> str:
+    def _format_location_context(
+        self,
+        context: Dict[str, Any],
+        full_markdown: str = "",
+        adjacent_locations: Optional[Dict[str, Dict[str, Any]]] = None,
+        populated_content: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Format location context for the DM prompt.
 
         Args:
             context: Structured location data from database
             full_markdown: Full module markdown to extract verbatim text
+            adjacent_locations: Map of direction -> adjacent location info
+            populated_content: B1-style populated room content (monsters, treasure)
         """
         import json
 
@@ -853,20 +1615,34 @@ class DMService:
         if loc:
             parts.append(f"\n## CURRENT LOCATION: {loc.get('name', '')} ({loc.get('key', '')})")
 
-            # CRITICAL: Include verbatim text from full markdown for this location
+            # CRITICAL: Include verbatim text for this location
             # This is the AUTHORITATIVE source - contains all details like body descriptions
             location_key = loc.get('key', '')
-            verbatim_text = None
-            if full_markdown and location_key:
+
+            # PRIORITY 1: Use source_text if available (most reliable - from parsing)
+            verbatim_text = loc.get('source_text')
+
+            # PRIORITY 2: Fall back to regex extraction if source_text is empty
+            if not verbatim_text and full_markdown and location_key:
                 verbatim_text = self._extract_location_from_markdown(full_markdown, location_key)
-                if verbatim_text:
-                    parts.append("\n### EXACT MODULE TEXT FOR THIS LOCATION (AUTHORITATIVE SOURCE):")
-                    parts.append("Use this text for ALL descriptions, treasure, bodies, and details.")
-                    parts.append("Do NOT invent details not mentioned here.\n")
-                    # Transform party language in the verbatim text too
-                    verbatim_text = self._transform_party_to_solo(verbatim_text)
-                    parts.append(verbatim_text)
-                    parts.append("\n--- END MODULE TEXT ---\n")
+
+            # Process verbatim text if we have it from either source
+            if verbatim_text:
+                parts.append("\n### EXACT MODULE TEXT FOR THIS LOCATION (AUTHORITATIVE SOURCE):")
+                parts.append("Use this text for ALL descriptions, treasure, bodies, and details.")
+                parts.append("Do NOT invent details not mentioned here.\n")
+
+                # Check if location is described as empty/barren
+                text_lower = verbatim_text.lower()
+                if any(word in text_lower for word in ["empty", "barren", "nothing of interest", "no markings"]):
+                    parts.append("⚠️ WARNING: This location is described as EMPTY/BARREN.")
+                    parts.append("DO NOT add atmosphere, hints, or 'you sense' descriptions.")
+                    parts.append("Just describe empty stone walls. That's it.\n")
+
+                # Transform party language in the verbatim text too
+                verbatim_text = self._transform_party_to_solo(verbatim_text)
+                parts.append(verbatim_text)
+                parts.append("\n--- END MODULE TEXT ---\n")
 
             if loc.get("read_aloud"):
                 # Transform party language to solo language
@@ -888,6 +1664,67 @@ class DMService:
                 parts.append("\n### EXITS:")
                 for direction, dest in loc["exits"].items():
                     parts.append(f"- {direction}: {dest}")
+
+            # ADJACENT LOCATIONS (what's behind each exit)
+            if adjacent_locations:
+                parts.append("\n### ADJACENT AREAS (what's behind each exit):")
+                parts.append("Use this to describe what the player would see/find in each direction:")
+                for direction, adj_info in adjacent_locations.items():
+                    adj_name = adj_info.get("name", "Unknown")
+                    adj_key = adj_info.get("key", "")
+                    adj_brief = adj_info.get("brief", "")
+                    key_str = f" ({adj_key})" if adj_key else ""
+                    parts.append(f"- {direction.upper()} → {adj_name}{key_str}")
+                    if adj_brief:
+                        parts.append(f"    Brief: {adj_brief}")
+
+            # POPULATED CONTENT (for B1-style modules with blank rooms)
+            if populated_content:
+                parts.append("\n### POPULATED CONTENT (DM-assigned monsters/treasure)")
+                parts.append("This room was blank and has been populated with the following:")
+
+                pop_monsters = populated_content.get("monsters")
+                if pop_monsters:
+                    parts.append("\n**Monsters:**")
+                    for monster in pop_monsters:
+                        name = monster.get("name", "Unknown")
+                        count = monster.get("count", 1)
+                        hp = monster.get("hp", [])
+                        behavior = monster.get("behavior", "")
+                        hp_str = f" (HP: {', '.join(str(h) for h in hp)})" if hp else ""
+                        parts.append(f"- {count}x {name}{hp_str}")
+                        if behavior:
+                            parts.append(f"  Behavior: {behavior}")
+
+                pop_treasure = populated_content.get("treasure")
+                if pop_treasure:
+                    parts.append("\n**Treasure:**")
+                    for treasure in pop_treasure:
+                        item = treasure.get("item", "Unknown")
+                        location = treasure.get("location", "")
+                        loc_str = f" ({location})" if location else ""
+                        parts.append(f"- {item}{loc_str}")
+
+                pop_notes = populated_content.get("notes")
+                if pop_notes:
+                    parts.append(f"\n**DM Notes:** {pop_notes}")
+
+            # TRIGGERED EVENTS - extract from verbatim text and mark as MANDATORY
+            if verbatim_text:
+                triggered_events = self._extract_triggered_events(verbatim_text)
+                if triggered_events:
+                    parts.append("\n### ⚠️ MANDATORY TRIGGERED EVENTS ⚠️")
+                    parts.append("These events MUST occur when the player enters/explores this location:")
+                    for event in triggered_events:
+                        parts.append(f"\n**{event['type'].upper()}:**")
+                        parts.append(f"Trigger: {event['trigger']}")
+                        if event.get('dialogue'):
+                            parts.append(f"EXACT DIALOGUE (use verbatim):")
+                            for line in event['dialogue']:
+                                parts.append(f'  "{line}"')
+                        if event.get('notes'):
+                            parts.append(f"Notes: {event['notes']}")
+                    parts.append("\n**YOU MUST EXECUTE THESE EVENTS. DO NOT SKIP THEM.**")
 
             # TRAPS section - always show, even if empty
             traps = loc.get("traps", [])
@@ -961,6 +1798,14 @@ class DMService:
                     parts.append(f"  [KEY ITEM]")
                 if item.get("found_at"):
                     parts.append(f"  Found at: {item['found_at']}")
+
+        # Final reminder about module fidelity
+        parts.append("\n---")
+        parts.append("### REMINDER: USE THE MODULE TEXT ABOVE")
+        parts.append("- If the module says 'empty and barren' → describe EMPTY STONE WALLS, nothing else")
+        parts.append("- If there are triggered events → EXECUTE THEM with exact dialogue")
+        parts.append("- Do NOT add 'you sense', 'you feel', atmosphere not in the text")
+        parts.append("- The module text is AUTHORITATIVE. Your job is to present it, not embellish it.")
 
         return "\n".join(parts)
 
